@@ -85,6 +85,7 @@ class Backend (util.Daemon):
 
         # Get useful atoms
         self.active_window_atom = self.get_custom_atom ("_NET_ACTIVE_WINDOW")
+        self.window_pid_atom = self.get_custom_atom ("_NET_WM_PID")
 
         # Get Property events on root
         mask = xcffib.xproto.EventMask.PropertyChange
@@ -120,11 +121,25 @@ class Backend (util.Daemon):
         (active_win_id,) = struct.unpack_from ({ 8: "b", 16: "h", 32: "i" }[data.format], data.value.buf ())
         return active_win_id
 
+    def get_window_prog_pid (self, win_id):
+        data = self.conn.core.GetProperty (
+                False,
+                win_id,
+                self.window_pid_atom,
+                xcffib.xproto.Atom.CARDINAL,
+                0, 100).reply ()
+        if not (data.format > 0 and data.type == xcffib.xproto.Atom.CARDINAL and
+                data.bytes_after == 0 and data.length == 1):
+            raise Exception ("invalid window pid formatting")
+        (pid,) = struct.unpack_from ({ 8: "b", 16: "h", 32: "i" }[data.format], data.value.buf ())
+        return pid
+
     def active_window_changed (self):
         # _NET_ACTIVE_WINDOW changed on root window, get new value
         active_win_id = self.get_active_window_id ()
         active_win_name = self.get_window_name (active_win_id)
-        logger.debug ("[notify] New active window = {}, name ='{}'".format (active_win_id, active_win_name))
+        pid = self.get_window_prog_pid (active_win_id)
+        logger.debug ("[notify] New active window = {}, name ='{}', pid={}".format (active_win_id, active_win_name, pid))
 
     def handle_events (self):
         ev = self.conn.poll_for_event ()
