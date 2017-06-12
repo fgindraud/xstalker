@@ -108,3 +108,15 @@ class Daemon (object):
             for d in new_data:
                 d._flag_to_be_activated = True
 
+# Class introspection and pretty print
+
+def class_attributes (cls):
+    """ Return all class attributes (usually class constants) """
+    return {attr: getattr (cls, attr) for attr in dir (cls) if not callable (attr) and not attr.startswith ("__")}
+
+def sequence_stringify (iterable, highlight = lambda t: False, stringify = str):
+    """ Print and join all elements of <iterable>, highlighting those matched by <highlight : obj -> bool> """
+    def formatting (data):
+        return ("[{}]" if highlight (data) else "{}").format (stringify (data))
+    return " ".join (map (formatting, iterable))
+

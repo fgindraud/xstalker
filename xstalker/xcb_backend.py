@@ -84,13 +84,22 @@ class Backend (util.Daemon):
         self.conn.flush ()
 
     def handle_events (self):
-        """ Discards all events, returns True if one was from Randr """
+        mode_flags_by_name = util.class_attributes (xcffib.xproto.NotifyMode)
+        detail_flags_by_name = util.class_attributes (xcffib.xproto.NotifyDetail)
+        def log_event (ev, name):
+            logger.debug ("[notify] {} win={} mode=({}) detail=({})".format (
+                name, ev.event, 
+                util.sequence_stringify (mode_flags_by_name.items (),
+                    highlight = lambda t: t[1] & ev.mode, stringify = lambda t: t[0]),
+                util.sequence_stringify (detail_flags_by_name.items (),
+                    highlight = lambda t: t[1] & ev.detail, stringify = lambda t: t[0])))
+        
         ev = self.conn.poll_for_event ()
         while ev:
             # Detect if we received at least one randr event
             if isinstance (ev, xcffib.xproto.FocusInEvent):
-                logger.debug ("[notify] FocusInEvent")
+                log_event (ev, "FocusInEvent")
             elif isinstance (ev, xcffib.xproto.FocusOutEvent):
-                logger.debug ("[notify] FocusOutEvent")
+                log_event (ev, "FocusOutEvent")
             ev = self.conn.poll_for_event ()
 
