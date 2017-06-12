@@ -85,7 +85,10 @@ class Backend (util.Daemon):
 
         # Get useful atoms
         self.active_window_atom = self.get_custom_atom ("_NET_ACTIVE_WINDOW")
-        self.window_pid_atom = self.get_custom_atom ("_NET_WM_PID")
+        self.utf8_string_atom = self.get_custom_atom ("UTF8_STRING")
+
+        # TODO support UTF8_STRING data (chromium WM_NAME !)
+        # TODO WM_WINDOW_ROLE ? "browser"..
 
         # Get Property events on root
         mask = xcffib.xproto.EventMask.PropertyChange
@@ -107,6 +110,21 @@ class Backend (util.Daemon):
             raise Exception ("invalid window name formatting")
         return data.value.to_string ()
 
+    def get_window_class (self, win_id):
+        data = self.conn.core.GetProperty (
+                False,
+                win_id,
+                xcffib.xproto.Atom.WM_CLASS,
+                xcffib.xproto.Atom.STRING,
+                0, 400).reply ()
+        if not (data.format == 8 and data.type in (xcffib.xproto.Atom.STRING, self.utf8_string_atom) and
+                data.bytes_after == 0):
+            raise Exception ("invalid window class data")
+        parts = data.value.to_string ().split ('\x00')
+        #if not (len (parts) == 3 and parts[2] == ''):
+        #    raise Exception ("invalid window class formatting")
+        return parts[0:2]
+
     def get_active_window_id (self):
         data = self.conn.core.GetProperty (
                 False, # Do not delete prop
@@ -121,25 +139,12 @@ class Backend (util.Daemon):
         (active_win_id,) = struct.unpack_from ({ 8: "b", 16: "h", 32: "i" }[data.format], data.value.buf ())
         return active_win_id
 
-    def get_window_prog_pid (self, win_id):
-        data = self.conn.core.GetProperty (
-                False,
-                win_id,
-                self.window_pid_atom,
-                xcffib.xproto.Atom.CARDINAL,
-                0, 100).reply ()
-        if not (data.format > 0 and data.type == xcffib.xproto.Atom.CARDINAL and
-                data.bytes_after == 0 and data.length == 1):
-            raise Exception ("invalid window pid formatting")
-        (pid,) = struct.unpack_from ({ 8: "b", 16: "h", 32: "i" }[data.format], data.value.buf ())
-        return pid
-
     def active_window_changed (self):
         # _NET_ACTIVE_WINDOW changed on root window, get new value
         active_win_id = self.get_active_window_id ()
         active_win_name = self.get_window_name (active_win_id)
-        pid = self.get_window_prog_pid (active_win_id)
-        logger.debug ("[notify] New active window = {}, name ='{}', pid={}".format (active_win_id, active_win_name, pid))
+        win_class = self.get_window_class (active_win_id)
+        logger.debug ("[active_win] name ='{}', class=({})".format (active_win_name, win_class))
 
     def handle_events (self):
         ev = self.conn.poll_for_event ()
