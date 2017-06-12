@@ -8,7 +8,13 @@ Status
 ------
 
 WIP.
-Can retrieve some properties.
+* Retrieves `WM_NAME` and `WM_CLASS`
+* TODO:
+	* Add struct to store context data
+	* List of categories: sequential list of matchers + category name
+	* Statistical system : gather category time slice by hour slots
+	* Daemon: add timeout support (the stat module will dump info every x minute)
+	* More context: cwd of pid ?
 
 Install
 -------

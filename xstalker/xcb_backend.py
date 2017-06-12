@@ -1,4 +1,4 @@
-# Copyright (c) 2013-2015 Francois GINDRAUD
+# Copyright (c) 2017 Francois GINDRAUD
 # 
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -66,6 +66,7 @@ class Backend (util.Daemon):
     def attach (self, callback):
         """ Register the callback from the manager """
         self.update_callback = callback
+        self.active_window_changed () # Force reloading state and call callback
 
     #################
     # X11 internals #
@@ -86,6 +87,7 @@ class Backend (util.Daemon):
         # Get useful atoms
         self.active_window_atom = self.get_custom_atom ("_NET_ACTIVE_WINDOW")
         self.utf8_string_atom = self.get_custom_atom ("UTF8_STRING")
+        self.compound_text_atom = self.get_custom_atom ("COMPOUND_TEXT")
 
         # Get Property events on root
         mask = xcffib.xproto.EventMask.PropertyChange
@@ -98,20 +100,26 @@ class Backend (util.Daemon):
     def get_string_property (self, win_id, atom):
         req = self.conn.core.GetProperty (False, win_id, atom, xcffib.xproto.Atom.STRING, 0, 400)
         utf8_req = self.conn.core.GetProperty (False, win_id, atom, self.utf8_string_atom, 0, 400)
+        ct_req = self.conn.core.GetProperty (False, win_id, atom, self.compound_text_atom, 0, 400)
         reply = req.reply ()
         utf8_reply = utf8_req.reply ()
+        ct_reply = ct_req.reply ()
         if reply.format == 8 and reply.type == xcffib.xproto.Atom.STRING and reply.bytes_after == 0:
             return reply.value.to_string ()
         elif utf8_reply.format == 8 and utf8_reply.type == self.utf8_string_atom and utf8_reply.bytes_after == 0:
             return utf8_reply.value.to_utf8 ()
+        elif ct_reply.format == 8 and ct_reply.type == self.compound_text_atom and ct_reply.bytes_after == 0:
+            return ct_reply.value.to_utf8 ()
         else:
-            raise Exception ("get_string_property: no STRING or UTF8_STRING prop for that atom")
+            return None
     
     def get_window_name (self, win_id):
         return self.get_string_property (win_id, xcffib.xproto.Atom.WM_NAME)
 
     def get_window_class (self, win_id):
         classes = self.get_string_property (win_id, xcffib.xproto.Atom.WM_CLASS)
+        if classes is None:
+            return None
         parts = classes.split ('\x00')
         if not (len (parts) == 3 and parts[2] == ''):
             raise Exception ("WM_CLASS should contain 2 null separated strings")
