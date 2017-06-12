@@ -87,9 +87,6 @@ class Backend (util.Daemon):
         self.active_window_atom = self.get_custom_atom ("_NET_ACTIVE_WINDOW")
         self.utf8_string_atom = self.get_custom_atom ("UTF8_STRING")
 
-        # TODO support UTF8_STRING data (chromium WM_NAME !)
-        # TODO WM_WINDOW_ROLE ? "browser"..
-
         # Get Property events on root
         mask = xcffib.xproto.EventMask.PropertyChange
         self.conn.core.ChangeWindowAttributes (self.root, xcffib.xproto.CW.EventMask, [mask], is_checked=True)
@@ -97,32 +94,27 @@ class Backend (util.Daemon):
 
     def get_custom_atom (self, name):
         return self.conn.core.InternAtom (True, len (name), name).reply ().atom
+
+    def get_string_property (self, win_id, atom):
+        req = self.conn.core.GetProperty (False, win_id, atom, xcffib.xproto.Atom.STRING, 0, 400)
+        utf8_req = self.conn.core.GetProperty (False, win_id, atom, self.utf8_string_atom, 0, 400)
+        reply = req.reply ()
+        utf8_reply = utf8_req.reply ()
+        if reply.format == 8 and reply.type == xcffib.xproto.Atom.STRING and reply.bytes_after == 0:
+            return reply.value.to_string ()
+        elif utf8_reply.format == 8 and utf8_reply.type == self.utf8_string_atom and utf8_reply.bytes_after == 0:
+            return utf8_reply.value.to_utf8 ()
+        else:
+            raise Exception ("get_string_property: no STRING or UTF8_STRING prop for that atom")
     
     def get_window_name (self, win_id):
-        data = self.conn.core.GetProperty (
-                False,
-                win_id,
-                xcffib.xproto.Atom.WM_NAME,
-                xcffib.xproto.Atom.STRING,
-                0, 400).reply ()
-        if not (data.format == 8 and data.type == xcffib.xproto.Atom.STRING and
-                data.bytes_after == 0):
-            raise Exception ("invalid window name formatting")
-        return data.value.to_string ()
+        return self.get_string_property (win_id, xcffib.xproto.Atom.WM_NAME)
 
     def get_window_class (self, win_id):
-        data = self.conn.core.GetProperty (
-                False,
-                win_id,
-                xcffib.xproto.Atom.WM_CLASS,
-                xcffib.xproto.Atom.STRING,
-                0, 400).reply ()
-        if not (data.format == 8 and data.type in (xcffib.xproto.Atom.STRING, self.utf8_string_atom) and
-                data.bytes_after == 0):
-            raise Exception ("invalid window class data")
-        parts = data.value.to_string ().split ('\x00')
-        #if not (len (parts) == 3 and parts[2] == ''):
-        #    raise Exception ("invalid window class formatting")
+        classes = self.get_string_property (win_id, xcffib.xproto.Atom.WM_CLASS)
+        parts = classes.split ('\x00')
+        if not (len (parts) == 3 and parts[2] == ''):
+            raise Exception ("WM_CLASS should contain 2 null separated strings")
         return parts[0:2]
 
     def get_active_window_id (self):
@@ -132,7 +124,6 @@ class Backend (util.Daemon):
                 self.active_window_atom,
                 xcffib.xproto.Atom.WINDOW,
                 0, 100).reply ()
-        # Parse active window id
         if not (data.format > 0 and data.type == xcffib.xproto.Atom.WINDOW and
                 data.bytes_after == 0 and data.length == 1):
             raise Exception ("invalid window id formatting")
