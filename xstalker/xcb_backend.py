@@ -23,7 +23,9 @@
 XCB interface part of the daemon.
 """
 
-import xcffib, xcffib.xproto
+import xcffib
+import xcffib.xproto
+import struct
 
 from . import util
 logger = util.setup_logger (__name__)
@@ -78,28 +80,57 @@ class Backend (util.Daemon):
         screen_setup = self.conn.setup.roots[kwd.get ("screen", self.conn.pref_screen)]
         self.root = screen_setup.root
 
-        # Randr register for events
-        mask = xcffib.xproto.EventMask.FocusChange
+        # Track changes in _NET_ACTIVE_WINDOW on root window (indicates which window has focus)
+        # This rely on the WM to have extended WM hints support, but most do
+
+        # Get useful atoms
+        self.active_window_atom = self.get_custom_atom ("_NET_ACTIVE_WINDOW")
+
+        # Get Property events on root
+        mask = xcffib.xproto.EventMask.PropertyChange
         self.conn.core.ChangeWindowAttributes (self.root, xcffib.xproto.CW.EventMask, [mask], is_checked=True)
         self.conn.flush ()
 
+    def get_custom_atom (self, name):
+        return self.conn.core.InternAtom (True, len (name), name).reply ().atom
+    
+    def get_window_name (self, win_id):
+        data = self.conn.core.GetProperty (
+                False,
+                win_id,
+                xcffib.xproto.Atom.WM_NAME,
+                xcffib.xproto.Atom.STRING,
+                0, 400).reply ()
+        if not (data.format == 8 and data.type == xcffib.xproto.Atom.STRING and
+                data.bytes_after == 0):
+            raise Exception ("invalid window name formatting")
+        return data.value.to_string ()
+
+    def get_active_window_id (self):
+        data = self.conn.core.GetProperty (
+                False, # Do not delete prop
+                self.root,
+                self.active_window_atom,
+                xcffib.xproto.Atom.WINDOW,
+                0, 100).reply ()
+        # Parse active window id
+        if not (data.format > 0 and data.type == xcffib.xproto.Atom.WINDOW and
+                data.bytes_after == 0 and data.length == 1):
+            raise Exception ("invalid window id formatting")
+        (active_win_id,) = struct.unpack_from ({ 8: "b", 16: "h", 32: "i" }[data.format], data.value.buf ())
+        return active_win_id
+
+    def active_window_changed (self):
+        # _NET_ACTIVE_WINDOW changed on root window, get new value
+        active_win_id = self.get_active_window_id ()
+        active_win_name = self.get_window_name (active_win_id)
+        logger.debug ("[notify] New active window = {}, name ='{}'".format (active_win_id, active_win_name))
+
     def handle_events (self):
-        mode_flags_by_name = util.class_attributes (xcffib.xproto.NotifyMode)
-        detail_flags_by_name = util.class_attributes (xcffib.xproto.NotifyDetail)
-        def log_event (ev, name):
-            logger.debug ("[notify] {} win={} mode=({}) detail=({})".format (
-                name, ev.event, 
-                util.sequence_stringify (mode_flags_by_name.items (),
-                    highlight = lambda t: t[1] & ev.mode, stringify = lambda t: t[0]),
-                util.sequence_stringify (detail_flags_by_name.items (),
-                    highlight = lambda t: t[1] & ev.detail, stringify = lambda t: t[0])))
-        
         ev = self.conn.poll_for_event ()
         while ev:
-            # Detect if we received at least one randr event
-            if isinstance (ev, xcffib.xproto.FocusInEvent):
-                log_event (ev, "FocusInEvent")
-            elif isinstance (ev, xcffib.xproto.FocusOutEvent):
-                log_event (ev, "FocusOutEvent")
+            if isinstance (ev, xcffib.xproto.PropertyNotifyEvent) and ev.window == self.root and \
+                    ev.state == xcffib.xproto.Property.NewValue and ev.atom == self.active_window_atom:
+                self.active_window_changed ()
             ev = self.conn.poll_for_event ()
 
