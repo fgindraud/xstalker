@@ -28,6 +28,8 @@ import xcffib.xproto
 import struct
 
 from . import util
+from . import stats
+
 logger = util.setup_logger (__name__)
 
 class Backend (util.Daemon):
@@ -41,7 +43,7 @@ class Backend (util.Daemon):
             screen, display :
                 override X11 default connect information
         """
-        self.update_callback = (lambda _: 0)
+        self.callback = (lambda _: 0)
         self.init_connection (**kwd)
 
     def cleanup (self):
@@ -65,7 +67,7 @@ class Backend (util.Daemon):
 
     def attach (self, callback):
         """ Register the callback from the manager """
-        self.update_callback = callback
+        self.callback = callback
         self.active_window_changed () # Force reloading state and call callback
 
     #################
@@ -120,10 +122,7 @@ class Backend (util.Daemon):
         classes = self.get_string_property (win_id, xcffib.xproto.Atom.WM_CLASS)
         if classes is None:
             return None
-        parts = classes.split ('\x00')
-        if not (len (parts) == 3 and parts[2] == ''):
-            raise Exception ("WM_CLASS should contain 2 null separated strings")
-        return parts[0:2]
+        return classes.split ('\x00')[0] # has 2 '\0'-separated strings
 
     def get_active_window_id (self):
         data = self.conn.core.GetProperty (
@@ -142,8 +141,8 @@ class Backend (util.Daemon):
         # _NET_ACTIVE_WINDOW changed on root window, get new value
         active_win_id = self.get_active_window_id ()
         active_win_name = self.get_window_name (active_win_id)
-        win_class = self.get_window_class (active_win_id)
-        logger.debug ("[active_win] name ='{}', class=({})".format (active_win_name, win_class))
+        active_win_class = self.get_window_class (active_win_id)
+        self.callback (stats.Context (win_name = active_win_name, win_class = active_win_class))
 
     def handle_events (self):
         ev = self.conn.poll_for_event ()

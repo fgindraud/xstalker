@@ -19,11 +19,6 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-'''
-'''
-
-# Config and start
-
 def default_configuration (config_dict):
     from pathlib import Path
     import logging
@@ -65,6 +60,7 @@ def start_daemon (**config):
     Start the daemon.
     """
     from . import util
+    from . import stats
 
     default_configuration (config)
     logger = util.setup_root_logging (config["log_file"], config["log_level"])
@@ -79,7 +75,7 @@ def start_daemon (**config):
     try:
         backend = config["backend_module"].Backend (**config["backend_args"])
         try:
-            #config_manager.start (backend)
+            backend.attach (stats.log_context)
             util.Daemon.event_loop (backend)
         except Exception:
             # Log backend detailed state in case of error
