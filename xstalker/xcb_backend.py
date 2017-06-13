@@ -37,18 +37,25 @@ class Backend (util.Daemon):
     # Main Interface #
     ##################
 
+    # __init__ API
     def __init__ (self, **kwd):
         """
         Backend init. Optionnal arguments :
             screen, display :
                 override X11 default connect information
         """
+        super ().__init__ ()
         self.callback = (lambda _: 0)
         self.init_connection (**kwd)
 
     def cleanup (self):
         self.conn.disconnect ()
     
+    def dump (self):
+        """ Returns internal state debug info as a string """
+        return "<TODO>"
+    
+    # Daemon API
     def fileno (self):
         return self.conn.get_file_descriptor ()
 
@@ -57,10 +64,6 @@ class Backend (util.Daemon):
         self.handle_events ()
         return True # Tell event loop to continue
 
-    def dump (self):
-        """ Returns internal state debug info as a string """
-        return "<TODO>"
-    
     ############################
     # Layout Manager Interface # TODO resue for stat module
     ############################

@@ -30,3 +30,6 @@ class Context (object):
 
 def log_context (ctx):
     logger.debug ("[ctx] class='{}' name='{}'".format (ctx.win_class, ctx.win_name))
+
+class StatsLogger (object):
+    pass

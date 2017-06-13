@@ -23,7 +23,6 @@
 Utilities
 """
 
-import select
 import logging, logging.handlers
 
 # Logging
@@ -55,36 +54,58 @@ class Daemon (object):
     """
     Daemon objects that listen to file descriptors and can be activated when new data is available
     A daemon can ask to be reactivated immediately even if no new data is available.
-    A counter ensure that reactivations does not loop undefinitely.
+    A counter ensure that reactivations does not loop undefinitely (it triggers an error).
 
     Must be implemented for each subclass :
-        int fileno () : returns file descriptor
+        int fileno () : returns file descriptor, or None to be excluded (timeout only)
+        int timeout () : timeout for object, in seconds, or None
         bool activate () : do stuff, and returns False to stop the event loop
     """
+
+    NOT_ACTIVATED = 0
+    ACTIVATED_MANUAL = 1
+    ACTIVATED_TIMEOUT = 2
+    ACTIVATED_DATA = 3
+
+    # Default version of API
+    def fileno (self):
+        return None
+    def timeout (self):
+        return None
+    def activate (self):
+        raise NotImplementedError
+
+    # Methods provided to subclasses
+    def __init__ (self):
+        """ Creates internal variables """
+        self._activation_reason = self.NOT_ACTIVATED
+        self._current_activation_reason = self.NOT_ACTIVATED
+        self._activation_counter = 0
+
     def activate_manually (self):
         """ Ask the event loop to activate us again """
-        self._flag_to_be_activated = True
+        self._activation_reason = self.ACTIVATED_MANUAL
 
-    def _to_be_activated (self):
-        # Try-except handles the init case, where the flag doesn't exist
-        try:
-            return self._flag_to_be_activated
-        except AttributeError:
-            return False
+    def activation_reason (self):
+        """ Gives us the activation reason for this call of activate() """
+        return self._current_activation_reason
 
-    def _reset_activation_counter (self):
-        self._activation_counter = 0
-    
+    # Internal stuff
+    def _is_activated (self):
+        return self._activation_reason != self.NOT_ACTIVATED
     def _activate (self):
-        # If activation counter doesn't exist, we are not in an event loop and we don't care
-        try:
-            self._activation_counter += 1
-            if self._activation_counter > 10:
-                raise RuntimeError ("daemon reactivation loop detected")
-        except AttributeError:
-            pass
-        return self.activate ()
+        # Detect possible activate_manually () loop
+        self._activation_counter += 1
+        if self._activation_counter > 100:
+            raise RuntimeError ("Daemon.event_loop: reactivation loop detected")
+        # Set context for activate (), then clean
+        self._current_activation_reason = self._activation_reason
+        self._activation_reason = self.NOT_ACTIVATED
+        continue_event_loop = self.activate ()
+        self._current_activation_reason = self.NOT_ACTIVATED
+        return continue_event_loop
 
+    # Top level event_loop system
     @staticmethod
     def event_loop (*daemons):
         # Quit nicely on SIGTERM
@@ -93,20 +114,31 @@ class Daemon (object):
             import sys
             sys.exit ()
         signal.signal (signal.SIGTERM, sigterm_handler)
-        # Event loop itself
-        while True:
-            # Activate deamons until no one has the activation flag raised
-            map (Daemon._reset_activation_counter, daemons)
-            while any (map (Daemon._to_be_activated, daemons)):
-                d = next (filter (Daemon._to_be_activated, daemons))
-                d._flag_to_be_activated = False
-                if d._activate () == False:
-                    return
 
-            # Raise activation flag on all deamons with new input data
-            new_data, _, _ = select.select (daemons, [], [])
-            for d in new_data:
-                d._flag_to_be_activated = True
+        # Event loop setup : use selector library
+        import selectors
+        selector_device = selectors.DefaultSelector ()
+        try:
+            for d in daemons:
+                if d.fileno () is not None:
+                    selector_device.register (d, selectors.EVENT_READ)
+
+            while True:
+                # Activate deamons until no one has the activation flag raised
+                for d in daemons:
+                    d._activation_counter = 0
+                while any (map (Daemon._is_activated, daemons)):
+                    d = next (filter (Daemon._is_activated, daemons))
+                    if d._activate () == False:
+                        return
+
+                # Raise activation flag on all deamons with new input data
+                # TODO handle timeout
+                activated_daemons = selector_device.select ()
+                for key, _ in activated_daemons:
+                    key.fileobj._activation_reason = Daemon.ACTIVATED_DATA
+        finally:
+            selector_device.close ()
 
 # Class introspection and pretty print
 
