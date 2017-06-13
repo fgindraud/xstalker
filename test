@@ -1,0 +1,10 @@
+#!/usr/bin/env python
+
+import xstalker
+import logging
+xstalker.start_daemon (
+        log_file = None,
+        log_level = logging.DEBUG,
+        db_file = "/tmp/aaa"
+        )
+

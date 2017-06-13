@@ -28,8 +28,7 @@ def default_configuration (config_dict):
     Also normalize Paths to use pathlib.
     """
 
-    #default_working_dir = Path.home ().joinpath(".config", "xstalker")
-    default_working_dir = Path.cwd () # FIXME testing
+    default_working_dir = Path.home ().joinpath(".config", "xstalker")
     def normalize_or_default_path (key, default_path):
         if key in config_dict:
             f = config_dict[key]
@@ -43,10 +42,8 @@ def default_configuration (config_dict):
         config_dict[key] = f
 
     # Logging
-    #normalize_or_default_path ("log_file", default_working_dir.joinpath ("log"))
-    config_dict["log_file"] = None
-    #config_dict.setdefault ("log_level", logging.INFO)
-    config_dict.setdefault ("log_level", logging.DEBUG) # FIXME testing
+    normalize_or_default_path ("log_file", default_working_dir.joinpath ("log"))
+    config_dict.setdefault ("log_level", logging.INFO)
 
     # Database
     normalize_or_default_path ("db_file", default_working_dir.joinpath ("database"))
