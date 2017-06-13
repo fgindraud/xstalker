@@ -20,6 +20,7 @@
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import pickle
+import datetime
 
 from . import util
 
@@ -37,8 +38,22 @@ class Database (object):
         * int : version number
     """
     def __init__ (self, db_file):
+        # dict { (date, int (hour)) -> dict { category : str -> seconds : int } }
+        self.db = {}
+
+        # File
         self.db_file = db_file
         self.load_database ()
+
+    # Manipulation
+
+    def add_time_slice_for_category (self, category, from_ts, to_ts):
+        logger.debug ("time slice for {}".format (category))
+        # TODO cut time slice into seconds for time points (date x hour)
+
+    def add_time_amount_for_category_at (self, category, seconds, time_point):
+        # TODO create time_point entry if not there, add to category
+        pass
 
     # Load / store database
 
@@ -79,12 +94,31 @@ class Database (object):
 class StatManager (util.FixedIntervalTimeoutDaemon):
     def __init__ (self, config):
         super ().__init__ (config["save_interval_sec"])
-        self.filters = config["filters"]
+        
         self.db = Database (config["db_file"])
+        self.filters = config["filters"]
+
+        self.current_category = util.Optional ()
+        self.current_category_since_ts = None
 
     def log (self, ctx):
         cat = self.determine_category (ctx)
+        if self.current_category != cat:
+            now = self.end_current_time_slice ()
+            self.current_category.set_value (cat)
+            self.current_category_since_ts = now
         logger.debug ("{} (class='{}' name='{}')".format (cat, ctx.win_class, ctx.win_name))
+
+    def end_current_time_slice (self):
+        # Returns now timestamp
+        now = int (datetime.datetime.today ().timestamp ())
+        if self.current_category:
+            self.db.add_time_slice_for_category (self.current_category.value (), self.current_category_since_ts, now)
+        return now
+
+    def cleanup (self):
+        self.end_current_time_slice ()
+        self.db.store_database ()
 
     def determine_category (self, ctx):
         """

@@ -62,6 +62,8 @@ class Optional (object):
     def value (self):
         assert self.has_value ()
         return self.obj
+    def set_value (self, val):
+        self.obj = val
     def map (self, f):
         """ Returns an Optional with f(self) if has_value, or empty Optional """
         return Optional (f (self.value ()) if self.has_value () else None)

@@ -82,6 +82,7 @@ def start_daemon (**config):
             raise
         finally:
             backend.cleanup ()
+            stat_manager.cleanup ()
 
     except Exception:
         # Log all top level errors
