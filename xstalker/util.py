@@ -52,14 +52,24 @@ logger = setup_logger (__name__)
 
 class Daemon (object):
     """
-    Daemon objects that listen to file descriptors and can be activated when new data is available
-    A daemon can ask to be reactivated immediately even if no new data is available.
+    Daemon objects are objects that can activated when some conditions happen in an event_loop.
+    They can be activated if:
+
+    1/ New data is available on a file descriptor.
+    To enable this behavior, fileno() must return a descriptor integer instead of None
+    This integer must be constant for the event_loop.
+
+    2/ The wait in the event_loop timeouts.
+    To enable this, timeout() must return an integer >= 0 (in seconds) instead of None
+
+    3/ The daemon is activated manually.
+    During execution, some code calls d.activate_manually() on the daemon to make it activate.
+    This is useful to reactivate a daemon event if no new data is available.
     A counter ensure that reactivations does not loop undefinitely (it triggers an error).
 
-    Must be implemented for each subclass :
-        int fileno () : returns file descriptor, or None to be excluded (timeout only)
-        int timeout () : timeout for object, in seconds, or None
-        bool activate () : do stuff, and returns False to stop the event loop
+    Finally, an activate() callback function must be implemented.
+    It must return a bool indicating if the event loop should continue.
+    During its execution, d.activation_reason() gives the reason for activation.
     """
 
     NOT_ACTIVATED = 0
@@ -108,6 +118,11 @@ class Daemon (object):
     # Top level event_loop system
     @staticmethod
     def event_loop (*daemons):
+        """
+        Take a list of daemons as input, handle their activation in an event loop.
+        fileno(): is supposed constant (only read once).
+        timeout(): read at each cycle ; only the smallest timeout daemon is activated for timeout.
+        """
         # Quit nicely on SIGTERM
         import signal
         def sigterm_handler (sig, stack):
@@ -132,13 +147,48 @@ class Daemon (object):
                     if d._activate () == False:
                         return
 
-                # Raise activation flag on all deamons with new input data
-                # TODO handle timeout
-                activated_daemons = selector_device.select ()
-                for key, _ in activated_daemons:
-                    key.fileobj._activation_reason = Daemon.ACTIVATED_DATA
+                # First determine if a timeout is used, and which daemons will timeout first
+                timeout = None
+                lowest_timeout_daemons = []
+                for d, t in ((d, d.timeout()) for d in daemons):
+                    if t is not None:
+                        if timeout is None or t < timeout:
+                            timeout = t
+                            lowest_timeout_daemons = [d]
+                        elif t == timeout:
+                            lowest_timeout_daemons.append (d)
+                # Check for input data using select
+                activated_daemons = selector_device.select (timeout)
+                if len (activated_daemons) > 0:
+                    for key, _ in activated_daemons:
+                        key.fileobj._activation_reason = Daemon.ACTIVATED_DATA
+                else:
+                    # Timeout
+                    for d in lowest_timeout_daemons:
+                        d._activation_reason = Daemon.ACTIVATED_TIMEOUT
         finally:
             selector_device.close ()
+
+class FixedIntervalTimeoutDaemon (Daemon):
+    """
+    Partial impl class to activate at a fixed interval in seconds (not precise)
+    """
+    def __init__ (self, interval_sec):
+        super ().__init__ ()
+        self._interval_sec = interval_sec
+        self._next_timeout_timestamp_sec = self._now () + interval_sec
+
+    def _now (self):
+        import time
+        return int (time.time ())
+
+    def timeout (self):
+        remaining = self._next_timeout_timestamp_sec - self._now ()
+        return max (0, min (remaining, self._interval_sec)) # Clamp in case of clock shift
+
+    def _activate (self):
+        self._next_timeout_timestamp_sec = self._now () + self._interval_sec
+        super ()._activate ()
 
 # Class introspection and pretty print
 

@@ -66,9 +66,7 @@ def start_daemon (**config):
     logger = util.setup_root_logging (config["log_file"], config["log_level"])
     logger.info ("SESSION START")
 
-    # Try loading database file.
-    # On failure we will just have an empty database, and start from zero.
-    # TODO recycle for stat DB: config_manager = layout.Manager (config["db_file"])
+    stat_manager = stats.StatManager ()
 
     # Launch backend and event loop
     # db_file is written at each modification of database to avoid failures
@@ -76,7 +74,7 @@ def start_daemon (**config):
         backend = config["backend_module"].Backend (**config["backend_args"])
         try:
             backend.attach (stats.log_context)
-            util.Daemon.event_loop (backend)
+            util.Daemon.event_loop (backend, stat_manager)
         except Exception:
             # Log backend detailed state in case of error
             logger.error ("logging backend state:\n" + backend.dump ())

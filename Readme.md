@@ -12,7 +12,6 @@ WIP.
 * TODO:
 	* List of categories: sequential list of matchers + category name
 	* Statistical system : gather category time slice by hour slots
-	* Daemon: add timeout support (the stat module will dump info every x minute)
 	* More context: cwd of pid ?
 	* Update on `WM_*` change on active window ?
 

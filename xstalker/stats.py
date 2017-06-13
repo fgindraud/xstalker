@@ -31,5 +31,10 @@ class Context (object):
 def log_context (ctx):
     logger.debug ("[ctx] class='{}' name='{}'".format (ctx.win_class, ctx.win_name))
 
-class StatsLogger (object):
-    pass
+class StatManager (util.FixedIntervalTimeoutDaemon):
+    def __init__ (self):
+        super ().__init__ (5)
+
+    def activate (self):
+        assert self.activation_reason () == util.Daemon.ACTIVATED_TIMEOUT
+        logger.debug ("[stats] timeout !")
