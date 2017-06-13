@@ -48,6 +48,44 @@ def setup_logger (module_name):
 
 logger = setup_logger (__name__)
 
+# Optional
+
+class Optional (object):
+    def __init__ (self, obj = None):
+        self.obj = obj
+        while isinstance (self.obj, Optional):
+            self.obj = self.obj.obj
+    def has_value (self):
+        return self.obj is not None
+    def __bool__ (self):
+        return self.has_value ()
+    def value (self):
+        assert self.has_value ()
+        return self.obj
+    def map (self, f):
+        """ Returns an Optional with f(self) if has_value, or empty Optional """
+        return Optional (f (self.value ()) if self.has_value () else None)
+    def map_with_error (self, f, exc_type=Exception):
+        """ Tries to perform map(f), returns empty Optional on exception """
+        try:
+            return self.map (f)
+        except exc_type:
+            return Optional ()
+    def filter (self, p):
+        """ Propgate self only if has a value and p(value) is True ; returns empty Optional otherwise """
+        return self if self.has_value () and p (self.value ()) else Optional ()
+    def __or__ (self, other):
+        """ Returns self if has_value, or the other element """
+        return self if self else other
+    def __str__ (self):
+        return str (self.obj)
+    def __repr__ (self):
+        return "Optional({})".format (repr (self.obj))
+    def __eq__ (self, other):
+        if isinstance (other, Optional) and not self.has_value () and not other.has_value ():
+            return True # Empty Optionals are equal
+        return self.has_value () and other == self.value ()
+
 # Daemon
 
 class Daemon (object):

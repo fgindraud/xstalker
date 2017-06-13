@@ -25,16 +25,24 @@ logger = util.setup_logger (__name__)
 
 class Context (object):
     def __init__ (self, **kwd):
-        self.win_name = kwd.get ("win_name")
-        self.win_class = kwd.get ("win_class")
-
-def log_context (ctx):
-    logger.debug ("[ctx] class='{}' name='{}'".format (ctx.win_class, ctx.win_name))
+        self.win_name = util.Optional (kwd.get ("win_name")).map (str.lower)
+        self.win_class = util.Optional (kwd.get ("win_class")).map (str.lower)
 
 class StatManager (util.FixedIntervalTimeoutDaemon):
-    def __init__ (self):
-        super ().__init__ (5)
+    def __init__ (self, config):
+        super ().__init__ (config["save_interval_sec"])
+        self.filters = config["filters"]
+
+    def log (self, ctx):
+        cat = self.determine_category (ctx)
+        logger.debug ("{} (class='{}' name='{}')".format (cat, repr (ctx.win_class), repr (ctx.win_name)))
+
+    def determine_category (self, ctx):
+        for c, p in self.filters:
+            if p (ctx):
+                return c
+        return None
 
     def activate (self):
         assert self.activation_reason () == util.Daemon.ACTIVATED_TIMEOUT
-        logger.debug ("[stats] timeout !")
+        logger.debug ("[stats] save timeout !")

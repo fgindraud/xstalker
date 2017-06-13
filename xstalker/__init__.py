@@ -19,7 +19,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-def default_configuration (config_dict):
+def normalize_or_default_configuration (config_dict):
     from pathlib import Path
     import logging
     from . import xcb_backend
@@ -47,10 +47,14 @@ def default_configuration (config_dict):
 
     # Database
     normalize_or_default_path ("db_file", default_working_dir.joinpath ("database"))
+    config_dict.setdefault ("save_interval_sec", 60)
 
     # Backend
     config_dict.setdefault ("backend_module", xcb_backend)
     config_dict.setdefault ("backend_args", {})
+
+    # Filters
+    config_dict.setdefault ("filters", [])
 
 def start_daemon (**config):
     """
@@ -59,18 +63,18 @@ def start_daemon (**config):
     from . import util
     from . import stats
 
-    default_configuration (config)
+    normalize_or_default_configuration (config)
     logger = util.setup_root_logging (config["log_file"], config["log_level"])
     logger.info ("SESSION START")
 
-    stat_manager = stats.StatManager ()
+    stat_manager = stats.StatManager (config)
 
     # Launch backend and event loop
-    # db_file is written at each modification of database to avoid failures
+    # db_file is written every minute
     try:
         backend = config["backend_module"].Backend (**config["backend_args"])
         try:
-            backend.attach (stats.log_context)
+            backend.attach (lambda ctx: stat_manager.log (ctx))
             util.Daemon.event_loop (backend, stat_manager)
         except Exception:
             # Log backend detailed state in case of error

@@ -103,39 +103,28 @@ class Backend (util.Daemon):
         return self.conn.core.InternAtom (True, len (name), name).reply ().atom
 
     def get_string_property (self, win_id, atom):
-        # TODO simplify with an Optional type ?
         # Send // requests
         req = self.conn.core.GetProperty (False, win_id, atom, xcffib.xproto.Atom.STRING, 0, 400)
-        reply = None
         utf8_req = self.conn.core.GetProperty (False, win_id, atom, self.utf8_string_atom, 0, 400)
-        utf8_reply = None
         ct_req = self.conn.core.GetProperty (False, win_id, atom, self.compound_text_atom, 0, 400)
-        ct_reply = None
         # Replies (failure is considered no-value)
-        try: reply = req.reply ()
-        except xcffib.Error: pass
-        try: utf8_reply = utf8_req.reply ()
-        except xcffib.Error: pass
-        try: ct_reply = ct_req.reply ()
-        except xcffib.Error: pass
+        get_reply = lambda r: r.reply ()
+        reply = util.Optional (req).map_with_error (get_reply, xcffib.Error)
+        utf8_reply = util.Optional (utf8_req).map_with_error (get_reply, xcffib.Error)
+        ct_reply = util.Optional (ct_req).map_with_error (get_reply, xcffib.Error)
         # Parse replies
-        if reply is not None and reply.format == 8 and reply.type == xcffib.xproto.Atom.STRING and reply.bytes_after == 0:
-            return reply.value.to_string ()
-        elif utf8_reply is not None and utf8_reply.format == 8 and utf8_reply.type == self.utf8_string_atom and utf8_reply.bytes_after == 0:
-            return utf8_reply.value.to_utf8 ()
-        elif ct_reply is not None and ct_reply.format == 8 and ct_reply.type == self.compound_text_atom and ct_reply.bytes_after == 0:
-            return ct_reply.value.to_utf8 ()
-        else:
-            return None
+        def check_reply (atom):
+            return lambda r: r.format == 8 and r.type == atom and r.bytes_after == 0
+        return reply.filter (check_reply (xcffib.xproto.Atom.STRING)).map (lambda v: v.value.to_string ()) | \
+                utf8_reply.filter (check_reply (self.utf8_string_atom)).map (lambda v: v.value.to_utf8 ()) | \
+                ct_reply.filter (check_reply (self.compound_text_atom)).map (lambda v: v.value.to_utf8 ())
     
     def get_window_name (self, win_id):
         return self.get_string_property (win_id, xcffib.xproto.Atom.WM_NAME)
 
     def get_window_class (self, win_id):
-        classes = self.get_string_property (win_id, xcffib.xproto.Atom.WM_CLASS)
-        if classes is None:
-            return None
-        return classes.split ('\x00')[0] # has 2 '\0'-separated strings
+        get_class_name = lambda s: s.split ('\x00')[0] # has 2 '\0'-separated strings
+        return self.get_string_property (win_id, xcffib.xproto.Atom.WM_CLASS).map (get_class_name)
 
     def get_active_window_id (self):
         data = self.conn.core.GetProperty (
