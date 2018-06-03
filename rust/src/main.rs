@@ -1,6 +1,51 @@
 extern crate tokio;
 
+struct ActiveWindowMetadata {
+    title: String,
+    class: String,
+}
+
+struct Classifier {
+    filters: Vec<(String, Box<Fn(&ActiveWindowMetadata) -> bool>)>,
+}
+impl Classifier {
+    fn new() -> Self {
+        Classifier {
+            filters: Vec::new(),
+        }
+    }
+    fn append_filter<F>(&mut self, category: &str, filter: F)
+    where
+        F: 'static + Fn(&ActiveWindowMetadata) -> bool,
+    {
+        self.filters
+            .push((String::from(category), Box::new(filter)));
+    }
+    fn categories(&self) -> Vec<String> {
+        let mut categories: Vec<String> = self.filters
+            .iter()
+            .map(|(category, _)| category.clone())
+            .collect();
+        categories.sort();
+        categories.dedup();
+        categories
+    }
+    fn classify(&self, metadata: &ActiveWindowMetadata) -> Option<&str> {
+        for (category, filter) in self.filters.iter() {
+            if filter(metadata) {
+                return Some(&category);
+            }
+        }
+        None
+    }
+}
+
 fn main() {
+    // Test classifier
+    let mut classifier = Classifier::new();
+    classifier.append_filter(&"coding", |md| md.class == "konsole");
+    classifier.append_filter(&"unknown", |_| true);
+
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
     use std::rc::Rc;
