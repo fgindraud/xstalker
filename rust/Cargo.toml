@@ -5,3 +5,4 @@ authors = ["François Gindraud <francois.gindraud@gmail.com>"]
 
 [dependencies]
 tokio = "0.1"
+xcb = "0.8"

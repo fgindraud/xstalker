@@ -1,4 +1,5 @@
 extern crate tokio;
+extern crate xcb;
 
 struct ActiveWindowMetadata {
     title: String,
@@ -38,6 +39,21 @@ impl Classifier {
             }
         }
         None
+    }
+}
+
+/// Xcb interface
+struct XcbStalker {
+    connection: xcb::Connection,
+}
+impl XcbStalker {
+    fn new() -> Self {
+        let (conn, _screen_num) = xcb::Connection::connect(None).unwrap();
+        XcbStalker { connection: conn }
+    }
+    fn get_file_descriptor(&self) -> std::os::unix::io::RawFd {
+        let raw_handle = self.connection.get_raw_conn();
+        unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
     }
 }
 
@@ -110,7 +126,9 @@ fn main() {
         println!("test: {}", db.file.metadata().unwrap().len());
     }
 
-    // TODO impl xcb reading
+    let xcb_stalker = XcbStalker::new();
+
+    // TODO wrap file descriptor for tokio
 
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
