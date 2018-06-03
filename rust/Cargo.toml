@@ -1,0 +1,7 @@
+[package]
+name = "xstalker"
+version = "0.1.0"
+authors = ["François Gindraud <francois.gindraud@gmail.com>"]
+
+[dependencies]
+

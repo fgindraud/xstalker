@@ -32,6 +32,8 @@ class Context (object):
         self.win_class = util.Optional (kwd.get ("win_class")).map (str.lower)
 
 class Database (object):
+    # TODO store database data !
+    # TODO database dumping / requests
     version = 1
     """
     Format v1 is:

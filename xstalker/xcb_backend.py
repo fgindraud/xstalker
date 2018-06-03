@@ -147,6 +147,7 @@ class Backend (util.Daemon):
         self.callback (stats.Context (win_name = active_win_name, win_class = active_win_class))
 
     def handle_events (self):
+        # TODO track changes to active window title
         ev = self.conn.poll_for_event ()
         while ev:
             if isinstance (ev, xcffib.xproto.PropertyNotifyEvent) and ev.window == self.root and \
