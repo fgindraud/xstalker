@@ -57,13 +57,13 @@ struct XcbStalkerAtoms {
 
 impl XcbStalkerAtoms {
     fn new(conn: &xcb::Connection) -> Self {
-        let active_window_req = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
-        let utf8_string_req = xcb::intern_atom(&conn, true, "UTF8_STRING");
-        let compound_text_req = xcb::intern_atom(&conn, true, "COMPOUND_TEXT");
+        let active_window_cookie = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
+        let utf8_string_cookie = xcb::intern_atom(&conn, true, "UTF8_STRING");
+        let compound_text_cookie = xcb::intern_atom(&conn, true, "COMPOUND_TEXT");
         XcbStalkerAtoms {
-            active_window: active_window_req.get_reply().unwrap().atom(),
-            utf8_string: utf8_string_req.get_reply().unwrap().atom(),
-            compound_text: compound_text_req.get_reply().unwrap().atom(),
+            active_window: active_window_cookie.get_reply().unwrap().atom(),
+            utf8_string: utf8_string_cookie.get_reply().unwrap().atom(),
+            compound_text: compound_text_cookie.get_reply().unwrap().atom(),
         }
     }
 }
@@ -97,6 +97,30 @@ impl XcbStalker {
         }
     }
 
+    fn get_active_window(&self) -> Result<xcb::Window, &str> {
+        let cookie = xcb::get_property(
+            &self.connection,
+            false,
+            self.root_window,
+            self.non_static_atoms.active_window,
+            xcb::ATOM_WINDOW,
+            0,
+            (std::mem::size_of::<xcb::Window>() / 4) as u32,
+        );
+        match &cookie.get_reply() {
+            Ok(reply)
+                if reply.format() == 32 && reply.type_() == xcb::ATOM_WINDOW
+                    && reply.bytes_after() == 0 && reply.value_len() == 1 =>
+            {
+                // Not pretty. Assumes that xcb::Window is an u32
+                let buf = reply.value() as &[xcb::Window];
+                Ok(buf[0])
+            }
+            Ok(_) => Err("get_active_window: wrong reply format"),
+            Err(_) => Err("Failed to get active window id"),
+        }
+    }
+
     fn handle_events(&self) {
         while let Some(event) = self.connection.wait_for_event() {
             let rt = event.response_type();
@@ -106,7 +130,8 @@ impl XcbStalker {
                     && event.atom() == self.non_static_atoms.active_window
                     && event.state() == xcb::PROPERTY_NEW_VALUE as u8
                 {
-                    println!("Event!");
+                    let w = self.get_active_window().unwrap();
+                    println!("active_window = {:x}", w);
                 }
             }
         }
