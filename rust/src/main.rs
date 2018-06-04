@@ -48,14 +48,46 @@ impl Classifier {
 }
 
 /// Xcb interface
+
+struct XcbStalkerAtoms {
+    active_window: xcb::Atom,
+    utf8_string: xcb::Atom,
+    compound_text: xcb::Atom,
+}
+
+impl XcbStalkerAtoms {
+    fn new(conn: &xcb::Connection) -> Self {
+        let active_window_req = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
+        let utf8_string_req = xcb::intern_atom(&conn, true, "UTF8_STRING");
+        let compound_text_req = xcb::intern_atom(&conn, true, "COMPOUND_TEXT");
+        XcbStalkerAtoms {
+            active_window: active_window_req.get_reply().unwrap().atom(),
+            utf8_string: utf8_string_req.get_reply().unwrap().atom(),
+            compound_text: compound_text_req.get_reply().unwrap().atom(),
+        }
+    }
+}
+
 struct XcbStalker {
     connection: xcb::Connection,
+    root_window: xcb::Window,
+    non_static_atoms: XcbStalkerAtoms,
 }
 
 impl XcbStalker {
     fn new() -> Self {
-        let (conn, _screen_num) = xcb::Connection::connect(None).unwrap();
-        XcbStalker { connection: conn }
+        let (conn, screen_num) = xcb::Connection::connect(None).unwrap();
+        let root_window = {
+            let setup = conn.get_setup();
+            let screen = setup.roots().nth(screen_num as usize).unwrap();
+            screen.root()
+        };
+        let non_static_atoms = XcbStalkerAtoms::new(&conn);
+        XcbStalker {
+            connection: conn,
+            root_window: root_window,
+            non_static_atoms: non_static_atoms,
+        }
     }
 }
 
