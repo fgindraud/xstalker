@@ -1,5 +1,9 @@
+extern crate mio;
 extern crate tokio;
 extern crate xcb;
+
+use std::io;
+use std::os::unix::io::AsRawFd;
 
 struct ActiveWindowMetadata {
     title: String,
@@ -55,13 +59,49 @@ impl XcbStalker {
     }
 }
 
-use std::os::unix::io::{AsRawFd, RawFd};
-impl AsRawFd for XcbStalker {
-    fn as_raw_fd(&self) -> RawFd {
+impl std::os::unix::io::AsRawFd for XcbStalker {
+    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
         let raw_handle = self.connection.get_raw_conn();
         unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
     }
 }
+
+impl mio::Evented for XcbStalker {
+    fn register(
+        &self,
+        poll: &mio::Poll,
+        token: mio::Token,
+        interest: mio::Ready,
+        opts: mio::PollOpt,
+    ) -> io::Result<()> {
+        println!("Registered!");
+        mio::unix::EventedFd(&self.as_raw_fd()).register(poll, token, interest, opts)
+    }
+
+    fn reregister(
+        &self,
+        poll: &mio::Poll,
+        token: mio::Token,
+        interest: mio::Ready,
+        opts: mio::PollOpt,
+    ) -> io::Result<()> {
+        println!("Reregistered!");
+        mio::unix::EventedFd(&self.as_raw_fd()).reregister(poll, token, interest, opts)
+    }
+
+    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
+        println!("Deregistered!");
+        mio::unix::EventedFd(&self.as_raw_fd()).deregister(poll)
+    }
+}
+
+// interesting:
+// tokio_core pollevented
+// https://github.com/tokio-rs/tokio-core/issues/63
+// https://github.com/rust-lang-nursery/futures-rs/issues/702
+//
+// TODO maybe mio::Evented on xcb::connection instead ?
+// TODO add a future or stream to handle updates ?
 
 /*
  * File format:
