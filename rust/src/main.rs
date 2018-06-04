@@ -99,7 +99,16 @@ impl XcbStalker {
 
     fn handle_events(&self) {
         while let Some(event) = self.connection.wait_for_event() {
-            println!("Event!");
+            let rt = event.response_type();
+            if rt == xcb::PROPERTY_NOTIFY {
+                let event: &xcb::PropertyNotifyEvent = unsafe { xcb::cast_event(&event) };
+                if event.window() == self.root_window
+                    && event.atom() == self.non_static_atoms.active_window
+                    && event.state() == xcb::PROPERTY_NEW_VALUE as u8
+                {
+                    println!("Event!");
+                }
+            }
         }
     }
 }
