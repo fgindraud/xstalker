@@ -5,4 +5,5 @@ authors = ["François Gindraud <francois.gindraud@gmail.com>"]
 
 [dependencies]
 tokio = "0.1"
+tokio-file-unix = "0.5.1"
 xcb = "0.8"

@@ -10,6 +10,7 @@ struct ActiveWindowMetadata {
 struct Classifier {
     filters: Vec<(String, Box<Fn(&ActiveWindowMetadata) -> bool>)>,
 }
+
 impl Classifier {
     fn new() -> Self {
         Classifier {
@@ -46,12 +47,17 @@ impl Classifier {
 struct XcbStalker {
     connection: xcb::Connection,
 }
+
 impl XcbStalker {
     fn new() -> Self {
         let (conn, _screen_num) = xcb::Connection::connect(None).unwrap();
         XcbStalker { connection: conn }
     }
-    fn get_file_descriptor(&self) -> std::os::unix::io::RawFd {
+}
+
+use std::os::unix::io::{AsRawFd, RawFd};
+impl AsRawFd for XcbStalker {
+    fn as_raw_fd(&self) -> RawFd {
         let raw_handle = self.connection.get_raw_conn();
         unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
     }
