@@ -6,6 +6,7 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 
 struct ActiveWindowMetadata {
+    // TODO optionals to handle missing data or failures ?
     title: String,
     class: String,
 }
@@ -121,7 +122,29 @@ impl XcbStalker {
         }
     }
 
+    fn get_window_title(&self, window: xcb::Window) -> Result<String, &str> {
+        let cookie = xcb::get_property(
+            &self.connection,
+            false,
+            window,
+            xcb::ATOM_WM_NAME,
+            xcb::ATOM_STRING,
+            0,
+            1024,
+        );
+        match cookie.get_reply() {
+            Ok(reply) => if let Ok(title) = std::str::from_utf8(reply.value()) {
+                Ok(String::from(title))
+            } else {
+                Err("get_window_title: not utf8")
+            },
+            Err(_) => Err("Unable to get window title"),
+        }
+        // TODO apply same strategy as before: test with 3 atoms
+    }
+
     fn handle_events(&self) {
+        // TODO tokio-ify
         while let Some(event) = self.connection.wait_for_event() {
             let rt = event.response_type();
             if rt == xcb::PROPERTY_NOTIFY {
@@ -131,7 +154,8 @@ impl XcbStalker {
                     && event.state() == xcb::PROPERTY_NEW_VALUE as u8
                 {
                     let w = self.get_active_window().unwrap();
-                    println!("active_window = {:x}", w);
+                    let title = self.get_window_title(w).unwrap();
+                    println!("active_window = '{}' {:x}", title, w);
                 }
             }
         }
