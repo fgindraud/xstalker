@@ -83,10 +83,23 @@ impl XcbStalker {
             screen.root()
         };
         let non_static_atoms = XcbStalkerAtoms::new(&conn);
+
+        // Listen to property changes for root window.
+        // This is where the active window property is maintained.
+        let values = [(xcb::CW_EVENT_MASK, xcb::EVENT_MASK_PROPERTY_CHANGE)];
+        xcb::change_window_attributes(&conn, root_window, &values);
+        conn.flush();
+
         XcbStalker {
             connection: conn,
             root_window: root_window,
             non_static_atoms: non_static_atoms,
+        }
+    }
+
+    fn handle_events(&self) {
+        while let Some(event) = self.connection.wait_for_event() {
+            println!("Event!");
         }
     }
 }
@@ -205,6 +218,7 @@ fn main() {
     }
 
     let xcb_stalker = XcbStalker::new();
+    xcb_stalker.handle_events();
 
     // TODO wrap file descriptor for tokio
 
