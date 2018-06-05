@@ -56,6 +56,7 @@ mod xcb_stalker {
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio;
     use tokio::prelude::*;
+    use tokio::reactor::PollEvented2 as PollEvented;
 
     pub use ActiveWindowMetadata;
 
@@ -66,7 +67,7 @@ mod xcb_stalker {
     }
 
     pub struct ActiveWindowStream {
-        inner: tokio::reactor::PollEvented2<Stalker>,
+        inner: PollEvented<Stalker>,
     }
 
     impl Stalker {
@@ -256,7 +257,6 @@ mod xcb_stalker {
             interest: mio::Ready,
             opts: mio::PollOpt,
         ) -> io::Result<()> {
-            println!("Registered!");
             mio::unix::EventedFd(&self.as_raw_fd()).register(poll, token, interest, opts)
         }
 
@@ -267,12 +267,10 @@ mod xcb_stalker {
             interest: mio::Ready,
             opts: mio::PollOpt,
         ) -> io::Result<()> {
-            println!("Reregistered!");
             mio::unix::EventedFd(&self.as_raw_fd()).reregister(poll, token, interest, opts)
         }
 
         fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-            println!("Deregistered!");
             mio::unix::EventedFd(&self.as_raw_fd()).deregister(poll)
         }
     }
@@ -280,7 +278,7 @@ mod xcb_stalker {
     impl ActiveWindowStream {
         fn new(stalker: Stalker) -> Self {
             ActiveWindowStream {
-                inner: tokio::reactor::PollEvented2::new(stalker),
+                inner: PollEvented::new(stalker),
             }
         }
     }
@@ -305,11 +303,7 @@ mod xcb_stalker {
             let active_window_changed = self.inner.get_ref().process_events();
             // Reset read flag, will be set again if data arrives on socket
             self.inner.clear_read_ready(mio::Ready::readable());
-            // debug
-            println!(
-                "poll called, active_window_changed = {}",
-                active_window_changed
-            );
+
             if active_window_changed {
                 // get_active_window_metadata requests replies are all consumed
                 Ok(Async::Ready(Some(
@@ -321,15 +315,6 @@ mod xcb_stalker {
         }
     }
 }
-
-// interesting:
-// tokio_core pollevented
-// https://github.com/tokio-rs/tokio-core/issues/63
-// https://github.com/rust-lang-nursery/futures-rs/issues/702
-// https://github.com/tokio-rs/tokio-core/issues/241
-//
-// TODO maybe mio::Evented on xcb::connection instead ?
-// TODO add a future or stream to handle updates ?
 
 /*
  * File format:
@@ -419,10 +404,14 @@ fn main() {
     use tokio::runtime::current_thread::Runtime;
     let mut runtime = Runtime::new().expect("unable to create tokio runtime");
     {
+        let counter = Rc::clone(&counter);
         let task = stalker
             .active_window_stream()
-            .for_each(|active_window| {
+            .for_each(move |active_window| {
+                // debug / test code
                 println!("ActiveWindowMetadata = {:?}", active_window);
+                let mut counter = counter.borrow_mut();
+                *counter += 1;
                 Ok(())
             })
             .map_err(|err| panic!("crash"));
@@ -440,20 +429,6 @@ fn main() {
             })
             .map_err(|err| panic!("store_data_task failed: {:?}", err));
         runtime.spawn(store_data_task);
-    }
-    {
-        // TEST periodically increment counter
-        use std::time::{Duration, Instant};
-        use tokio::timer::Interval;
-        let counter = Rc::clone(&counter);
-        let increment = Interval::new(Instant::now(), Duration::from_secs(3))
-            .for_each(move |instant| {
-                let mut c = counter.borrow_mut();
-                *c += 1;
-                Ok(())
-            })
-            .map_err(|err| panic!("increment failed: {:?}", err));
-        runtime.spawn(increment);
     }
     runtime.run().expect("tokio runtime failure")
 }
