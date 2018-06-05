@@ -1,10 +1,10 @@
 extern crate mio;
 extern crate tokio;
 
+#[derive(Debug)]
 struct ActiveWindowMetadata {
-    // TODO optionals to handle missing data or failures ?
-    title: String,
-    class: String,
+    title: Option<String>,
+    class: Option<String>,
 }
 
 /// Classifier: stores filters used to determine category of time slice
@@ -47,6 +47,7 @@ impl Classifier {
 /// Xcb interface
 mod xcb_stalker {
     extern crate xcb;
+    use ActiveWindowMetadata;
     use mio;
     use std;
     use std::io;
@@ -60,19 +61,16 @@ mod xcb_stalker {
 
     impl Stalker {
         pub fn new() -> Self {
+            // Xcb Boilerplate TODO error handling ?
             let (conn, screen_num) = xcb::Connection::connect(None).unwrap();
             let root_window = {
                 let setup = conn.get_setup();
                 let screen = setup.roots().nth(screen_num as usize).unwrap();
                 screen.root()
             };
+
+            // Get useful non static atoms for later.
             let non_static_atoms = NonStaticAtoms::new(&conn);
-            println!(
-                "non_static_atoms: str={} utf8={} compound={}",
-                xcb::ATOM_STRING,
-                non_static_atoms.utf8_string,
-                non_static_atoms.compound_text
-            );
 
             // Listen to property changes for root window.
             // This is where the active window property is maintained.
@@ -122,23 +120,33 @@ mod xcb_stalker {
                         && event.state() == xcb::PROPERTY_NEW_VALUE as u8
                     {
                         let w = self.get_active_window().unwrap();
-                        let (title, class) = {
-                            let title = get_text_property(
-                                &self.connection,
-                                w,
-                                xcb::ATOM_WM_NAME,
-                                &self.non_static_atoms,
-                            );
-                            let class = get_text_property(
-                                &self.connection,
-                                w,
-                                xcb::ATOM_WM_CLASS,
-                                &self.non_static_atoms,
-                            );
-                            (title.get(), class.get())
+                        // Requests
+                        let title = get_text_property(
+                            &self.connection,
+                            w,
+                            xcb::ATOM_WM_NAME,
+                            &self.non_static_atoms,
+                        );
+                        let class = get_text_property(
+                            &self.connection,
+                            w,
+                            xcb::ATOM_WM_CLASS,
+                            &self.non_static_atoms,
+                        );
+                        // Process replies
+                        let title = title.get();
+                        let class = class.get().map(|mut text| match text.find('\0') {
+                            Some(offset) => {
+                                text.truncate(offset);
+                                text
+                            }
+                            None => text,
+                        });
+                        let metadata = ActiveWindowMetadata {
+                            title: title,
+                            class: class,
                         };
-                        // Class contains two strings split by \0 TODO get first half ?
-                        println!("active_window = '{:?}' '{:?}' {:x}", title, class, w);
+                        println!("active_window = {:?}", metadata);
                     }
                 }
             }
@@ -179,12 +187,14 @@ mod xcb_stalker {
         }
     }
 
+    /// Cookie: ongoing request for a text property
     struct GetTextPropertyCookie<'a> {
         cookie: xcb::GetPropertyCookie<'a>,
         non_static_atoms: &'a NonStaticAtoms,
     }
 
     impl<'a> GetTextPropertyCookie<'a> {
+        /// Retrieve the text property as a String, or None if error.
         fn get(&self) -> Option<String> {
             if let Ok(reply) = self.cookie.get_reply() {
                 if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0 {
@@ -248,6 +258,7 @@ mod xcb_stalker {
             mio::unix::EventedFd(&self.as_raw_fd()).deregister(poll)
         }
     }
+
 }
 
 // interesting:
@@ -318,7 +329,12 @@ fn get_last_line(file: &mut std::fs::File) -> String {
 fn main() {
     // Test classifier
     let mut classifier = Classifier::new();
-    classifier.append_filter(&"coding", |md| md.class == "konsole");
+    classifier.append_filter(&"coding", |md| {
+        md.class
+            .as_ref()
+            .map(|class| class == "konsole")
+            .unwrap_or(false)
+    });
     classifier.append_filter(&"unknown", |_| true);
 
     {
@@ -329,8 +345,6 @@ fn main() {
 
     let stalker = xcb_stalker::Stalker::new();
     stalker.handle_events();
-
-    // TODO wrap file descriptor for tokio
 
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
