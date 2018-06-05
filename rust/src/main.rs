@@ -81,7 +81,7 @@ mod xcb_stalker {
             }
         }
 
-        fn get_active_window(&self) -> Result<xcb::Window, &str> {
+        fn get_active_window(&self) -> Option<xcb::Window> {
             let cookie = xcb::get_property(
                 &self.connection,
                 false,
@@ -93,16 +93,15 @@ mod xcb_stalker {
             );
             match &cookie.get_reply() {
                 Ok(reply)
-                    if reply.format() == 32 && reply.type_() == xcb::ATOM_WINDOW
-                        && reply.bytes_after() == 0
-                        && reply.value_len() == 1 =>
+                    if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
+                        && reply.value_len() * reply.format() as u32
+                            == (std::mem::size_of::<xcb::Window>() * 8) as u32 =>
                 {
                     // Not pretty. Assumes that xcb::Window is an u32
                     let buf = reply.value() as &[xcb::Window];
-                    Ok(buf[0])
+                    Some(buf[0])
                 }
-                Ok(_) => Err("get_active_window: wrong reply format"),
-                Err(_) => Err("Failed to get active window id"),
+                _ => None,
             }
         }
 
