@@ -66,7 +66,7 @@ mod xcb_stalker {
     }
 
     pub struct ActiveWindowStream {
-        stalker: tokio::reactor::PollEvented2<Stalker>,
+        inner: tokio::reactor::PollEvented2<Stalker>,
     }
 
     impl Stalker {
@@ -143,9 +143,7 @@ mod xcb_stalker {
         }
 
         pub fn active_window_stream(self) -> ActiveWindowStream {
-            ActiveWindowStream {
-                stalker: tokio::reactor::PollEvented2::new(self),
-            }
+            ActiveWindowStream::new(self)
         }
 
         fn get_active_window(&self) -> Option<xcb::Window> {
@@ -279,19 +277,43 @@ mod xcb_stalker {
         }
     }
 
+    impl ActiveWindowStream {
+        fn new(stalker: Stalker) -> Self {
+            ActiveWindowStream {
+                inner: tokio::reactor::PollEvented2::new(stalker),
+            }
+        }
+    }
+
     impl Stream for ActiveWindowStream {
         type Item = ActiveWindowMetadata;
         type Error = io::Error;
 
         fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
-            let active_window_changed = self.stalker.get_ref().process_events();
+            // FIXME this works, but its a mess
+            // TODO stream for events, and build upon that ?
+            // TODO for ActiveWindowStream: add initial value ? or feed it manually before starting
+            // tokio ?
+
+            // Check if readable
+            match self.inner.poll_read_ready(mio::Ready::readable()) {
+                Ok(Async::Ready(_)) => (),
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Err(e) => return Err(e),
+            }
+            // Read all events
+            let active_window_changed = self.inner.get_ref().process_events();
+            // Reset read flag, will be set again if data arrives on socket
+            self.inner.clear_read_ready(mio::Ready::readable());
+            // debug
             println!(
                 "poll called, active_window_changed = {}",
                 active_window_changed
             );
             if active_window_changed {
+                // get_active_window_metadata requests replies are all consumed
                 Ok(Async::Ready(Some(
-                    self.stalker.get_ref().get_active_window_metadata(),
+                    self.inner.get_ref().get_active_window_metadata(),
                 )))
             } else {
                 Ok(Async::NotReady)
