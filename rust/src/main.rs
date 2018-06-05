@@ -67,6 +67,12 @@ mod xcb_stalker {
                 screen.root()
             };
             let non_static_atoms = NonStaticAtoms::new(&conn);
+            println!(
+                "non_static_atoms: str={} utf8={} compound={}",
+                xcb::ATOM_STRING,
+                non_static_atoms.utf8_string,
+                non_static_atoms.compound_text
+            );
 
             // Listen to property changes for root window.
             // This is where the active window property is maintained.
@@ -94,11 +100,11 @@ mod xcb_stalker {
             match &cookie.get_reply() {
                 Ok(reply)
                     if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
-                        && reply.value_len() * reply.format() as u32
-                            == (std::mem::size_of::<xcb::Window>() * 8) as u32 =>
+                        && reply.value_len() == 1
+                        && reply.format() == 32 =>
                 {
                     // Not pretty. Assumes that xcb::Window is an u32
-                    let buf = reply.value() as &[xcb::Window];
+                    let buf: &[xcb::Window] = reply.value();
                     Some(buf[0])
                 }
                 _ => None,
@@ -117,13 +123,13 @@ mod xcb_stalker {
                     {
                         let w = self.get_active_window().unwrap();
                         let (title, class) = {
-                            let title = GetTextPropertyCookie::new(
+                            let title = get_text_property(
                                 &self.connection,
                                 w,
                                 xcb::ATOM_WM_NAME,
                                 &self.non_static_atoms,
                             );
-                            let class = GetTextPropertyCookie::new(
+                            let class = get_text_property(
                                 &self.connection,
                                 w,
                                 xcb::ATOM_WM_CLASS,
@@ -139,6 +145,7 @@ mod xcb_stalker {
         }
     }
 
+    /// Store non static useful atoms
     struct NonStaticAtoms {
         active_window: xcb::Atom,
         utf8_string: xcb::Atom,
@@ -146,6 +153,7 @@ mod xcb_stalker {
     }
 
     impl NonStaticAtoms {
+        /// Get values from server
         fn new(conn: &xcb::Connection) -> Self {
             let active_window_cookie = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
             let utf8_string_cookie = xcb::intern_atom(&conn, true, "UTF8_STRING");
@@ -158,62 +166,46 @@ mod xcb_stalker {
         }
     }
 
+    /// Launch a request for a text property
+    fn get_text_property<'a>(
+        conn: &'a xcb::Connection,
+        window: xcb::Window,
+        atom: xcb::Atom,
+        non_static_atoms: &'a NonStaticAtoms,
+    ) -> GetTextPropertyCookie<'a> {
+        GetTextPropertyCookie {
+            cookie: xcb::get_property(conn, false, window, atom, xcb::ATOM_ANY, 0, 1024),
+            non_static_atoms: non_static_atoms,
+        }
+    }
+
     struct GetTextPropertyCookie<'a> {
-        as_string: xcb::GetPropertyCookie<'a>,
-        as_utf8_string: xcb::GetPropertyCookie<'a>,
-        as_compound_string: xcb::GetPropertyCookie<'a>,
+        cookie: xcb::GetPropertyCookie<'a>,
+        non_static_atoms: &'a NonStaticAtoms,
     }
 
     impl<'a> GetTextPropertyCookie<'a> {
-        fn new(
-            conn: &'a xcb::Connection,
-            window: xcb::Window,
-            atom: xcb::Atom,
-            non_static_atoms: &NonStaticAtoms,
-        ) -> Self {
-            GetTextPropertyCookie {
-                as_string: xcb::get_property(conn, false, window, atom, xcb::ATOM_STRING, 0, 1024),
-                as_utf8_string: xcb::get_property(
-                    conn,
-                    false,
-                    window,
-                    atom,
-                    non_static_atoms.utf8_string,
-                    0,
-                    1024,
-                ),
-                as_compound_string: xcb::get_property(
-                    conn,
-                    false,
-                    window,
-                    atom,
-                    non_static_atoms.compound_text,
-                    0,
-                    1024,
-                ),
-            }
-        }
-
         fn get(&self) -> Option<String> {
-            let (as_string, as_utf8_string, as_compound_string) = (
-                self.as_string.get_reply(),
-                self.as_utf8_string.get_reply(),
-                self.as_compound_string.get_reply(),
-            );
-            if let Ok(reply) = as_string {
-                if let Ok(text) = std::str::from_utf8(reply.value()) {
-                    return Some(String::from(text));
+            if let Ok(reply) = self.cookie.get_reply() {
+                if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0
+                    && [
+                        xcb::ATOM_STRING,
+                        self.non_static_atoms.utf8_string,
+                        self.non_static_atoms.compound_text,
+                    ].contains(&reply.type_())
+                {
+                    if let Ok(text) = std::str::from_utf8(reply.value()) {
+                        return Some(String::from(text));
+                    }
                 }
-            }
-            if let Ok(reply) = as_utf8_string {
-                if let Ok(text) = std::str::from_utf8(reply.value()) {
-                    return Some(String::from(text));
-                }
-            }
-            if let Ok(reply) = as_compound_string {
-                if let Ok(text) = std::str::from_utf8(reply.value()) {
-                    return Some(String::from(text));
-                }
+                // Debug bad replies
+                println!(
+                    "(format={},type={},ba={},len={})",
+                    reply.format(),
+                    reply.type_(),
+                    reply.bytes_after(),
+                    reply.value_len()
+                );
             }
             None
         }
