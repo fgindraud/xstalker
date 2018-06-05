@@ -94,15 +94,39 @@ mod xcb_stalker {
             }
         }
 
-        pub fn active_window_stream(self) -> ActiveWindowStream {
-            ActiveWindowStream {
-                stalker: tokio::reactor::PollEvented2::new(self),
+        pub fn get_active_window_metadata(&self) -> ActiveWindowMetadata {
+            let w = self.get_active_window().unwrap();
+            // Requests
+            let title = get_text_property(
+                &self.connection,
+                w,
+                xcb::ATOM_WM_NAME,
+                &self.non_static_atoms,
+            );
+            let class = get_text_property(
+                &self.connection,
+                w,
+                xcb::ATOM_WM_CLASS,
+                &self.non_static_atoms,
+            );
+            // Process replies
+            let title = title.get();
+            let class = class.get().map(|mut text| match text.find('\0') {
+                Some(offset) => {
+                    text.truncate(offset);
+                    text
+                }
+                None => text,
+            });
+            ActiveWindowMetadata {
+                title: title,
+                class: class,
             }
         }
 
-        pub fn handle_events(&self) {
-            // TODO tokio-ify
-            while let Some(event) = self.connection.wait_for_event() {
+        pub fn process_events(&self) -> bool {
+            let mut active_window_changed = false;
+            while let Some(event) = self.connection.poll_for_event() {
                 let rt = event.response_type();
                 if rt == xcb::PROPERTY_NOTIFY {
                     let event: &xcb::PropertyNotifyEvent = unsafe { xcb::cast_event(&event) };
@@ -110,36 +134,16 @@ mod xcb_stalker {
                         && event.atom() == self.non_static_atoms.active_window
                         && event.state() == xcb::PROPERTY_NEW_VALUE as u8
                     {
-                        let w = self.get_active_window().unwrap();
-                        // Requests
-                        let title = get_text_property(
-                            &self.connection,
-                            w,
-                            xcb::ATOM_WM_NAME,
-                            &self.non_static_atoms,
-                        );
-                        let class = get_text_property(
-                            &self.connection,
-                            w,
-                            xcb::ATOM_WM_CLASS,
-                            &self.non_static_atoms,
-                        );
-                        // Process replies
-                        let title = title.get();
-                        let class = class.get().map(|mut text| match text.find('\0') {
-                            Some(offset) => {
-                                text.truncate(offset);
-                                text
-                            }
-                            None => text,
-                        });
-                        let metadata = ActiveWindowMetadata {
-                            title: title,
-                            class: class,
-                        };
-                        println!("active_window = {:?}", metadata);
+                        active_window_changed = true;
                     }
                 }
+            }
+            active_window_changed
+        }
+
+        pub fn active_window_stream(self) -> ActiveWindowStream {
+            ActiveWindowStream {
+                stalker: tokio::reactor::PollEvented2::new(self),
             }
         }
 
@@ -279,8 +283,18 @@ mod xcb_stalker {
         type Error = io::Error;
 
         fn poll(&mut self) -> futures::Poll<Option<Self::Item>, io::Error> {
-            println!("poll called");
-            Ok(futures::Async::Ready(None))
+            let active_window_changed = self.stalker.get_ref().process_events();
+            println!(
+                "poll called, active_window_changed = {}",
+                active_window_changed
+            );
+            if active_window_changed {
+                Ok(futures::Async::Ready(Some(
+                    self.stalker.get_ref().get_active_window_metadata(),
+                )))
+            } else {
+                Ok(futures::Async::NotReady)
+            }
         }
     }
 }
@@ -289,6 +303,7 @@ mod xcb_stalker {
 // tokio_core pollevented
 // https://github.com/tokio-rs/tokio-core/issues/63
 // https://github.com/rust-lang-nursery/futures-rs/issues/702
+// https://github.com/tokio-rs/tokio-core/issues/241
 //
 // TODO maybe mio::Evented on xcb::connection instead ?
 // TODO add a future or stream to handle updates ?
