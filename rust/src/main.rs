@@ -187,27 +187,29 @@ mod xcb_stalker {
     impl<'a> GetTextPropertyCookie<'a> {
         fn get(&self) -> Option<String> {
             if let Ok(reply) = self.cookie.get_reply() {
-                if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0
-                    && [
-                        xcb::ATOM_STRING,
-                        self.non_static_atoms.utf8_string,
-                        self.non_static_atoms.compound_text,
-                    ].contains(&reply.type_())
-                {
-                    if let Ok(text) = std::str::from_utf8(reply.value()) {
-                        return Some(String::from(text));
+                if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0 {
+                    match reply.type_() {
+                        atom if [
+                            xcb::ATOM_STRING,
+                            self.non_static_atoms.utf8_string,
+                            self.non_static_atoms.compound_text,
+                        ].contains(&atom) =>
+                        {
+                            std::str::from_utf8(reply.value())
+                                .ok()
+                                .map(|text| String::from(text))
+                        }
+                        atom => {
+                            eprintln!("get_text_property: unsupported atom reply: {}", atom);
+                            None
+                        }
                     }
+                } else {
+                    None
                 }
-                // Debug bad replies
-                println!(
-                    "(format={},type={},ba={},len={})",
-                    reply.format(),
-                    reply.type_(),
-                    reply.bytes_after(),
-                    reply.value_len()
-                );
+            } else {
+                None
             }
-            None
         }
     }
 
