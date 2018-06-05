@@ -1,7 +1,8 @@
 #![deny(deprecated)]
-extern crate futures;
 extern crate mio;
 extern crate tokio;
+
+use tokio::prelude::*;
 
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
@@ -49,12 +50,12 @@ impl Classifier {
 /// Xcb interface
 mod xcb_stalker {
     extern crate xcb;
-    use futures;
     use mio;
     use std;
     use std::io;
-    use std::os::unix::io::AsRawFd;
+    use std::os::unix::io::{AsRawFd, RawFd};
     use tokio;
+    use tokio::prelude::*;
 
     pub use ActiveWindowMetadata;
 
@@ -242,8 +243,8 @@ mod xcb_stalker {
         }
     }
 
-    impl std::os::unix::io::AsRawFd for Stalker {
-        fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+    impl AsRawFd for Stalker {
+        fn as_raw_fd(&self) -> RawFd {
             let raw_handle = self.connection.get_raw_conn();
             unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
         }
@@ -278,22 +279,22 @@ mod xcb_stalker {
         }
     }
 
-    impl futures::stream::Stream for ActiveWindowStream {
+    impl Stream for ActiveWindowStream {
         type Item = ActiveWindowMetadata;
         type Error = io::Error;
 
-        fn poll(&mut self) -> futures::Poll<Option<Self::Item>, io::Error> {
+        fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
             let active_window_changed = self.stalker.get_ref().process_events();
             println!(
                 "poll called, active_window_changed = {}",
                 active_window_changed
             );
             if active_window_changed {
-                Ok(futures::Async::Ready(Some(
+                Ok(Async::Ready(Some(
                     self.stalker.get_ref().get_active_window_metadata(),
                 )))
             } else {
-                Ok(futures::Async::NotReady)
+                Ok(Async::NotReady)
             }
         }
     }
