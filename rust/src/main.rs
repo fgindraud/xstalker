@@ -1,9 +1,5 @@
 extern crate mio;
 extern crate tokio;
-extern crate xcb;
-
-use std::io;
-use std::os::unix::io::AsRawFd;
 
 struct ActiveWindowMetadata {
     // TODO optionals to handle missing data or failures ?
@@ -49,152 +45,215 @@ impl Classifier {
 }
 
 /// Xcb interface
+mod xcb_stalker {
+    extern crate xcb;
+    use mio;
+    use std;
+    use std::io;
+    use std::os::unix::io::AsRawFd;
 
-struct XcbStalkerAtoms {
-    active_window: xcb::Atom,
-    utf8_string: xcb::Atom,
-    compound_text: xcb::Atom,
-}
-
-impl XcbStalkerAtoms {
-    fn new(conn: &xcb::Connection) -> Self {
-        let active_window_cookie = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
-        let utf8_string_cookie = xcb::intern_atom(&conn, true, "UTF8_STRING");
-        let compound_text_cookie = xcb::intern_atom(&conn, true, "COMPOUND_TEXT");
-        XcbStalkerAtoms {
-            active_window: active_window_cookie.get_reply().unwrap().atom(),
-            utf8_string: utf8_string_cookie.get_reply().unwrap().atom(),
-            compound_text: compound_text_cookie.get_reply().unwrap().atom(),
-        }
-    }
-}
-
-struct XcbStalker {
-    connection: xcb::Connection,
-    root_window: xcb::Window,
-    non_static_atoms: XcbStalkerAtoms,
-}
-
-impl XcbStalker {
-    fn new() -> Self {
-        let (conn, screen_num) = xcb::Connection::connect(None).unwrap();
-        let root_window = {
-            let setup = conn.get_setup();
-            let screen = setup.roots().nth(screen_num as usize).unwrap();
-            screen.root()
-        };
-        let non_static_atoms = XcbStalkerAtoms::new(&conn);
-
-        // Listen to property changes for root window.
-        // This is where the active window property is maintained.
-        let values = [(xcb::CW_EVENT_MASK, xcb::EVENT_MASK_PROPERTY_CHANGE)];
-        xcb::change_window_attributes(&conn, root_window, &values);
-        conn.flush();
-
-        XcbStalker {
-            connection: conn,
-            root_window: root_window,
-            non_static_atoms: non_static_atoms,
-        }
+    pub struct Stalker {
+        connection: xcb::Connection,
+        root_window: xcb::Window,
+        non_static_atoms: NonStaticAtoms,
     }
 
-    fn get_active_window(&self) -> Result<xcb::Window, &str> {
-        let cookie = xcb::get_property(
-            &self.connection,
-            false,
-            self.root_window,
-            self.non_static_atoms.active_window,
-            xcb::ATOM_WINDOW,
-            0,
-            (std::mem::size_of::<xcb::Window>() / 4) as u32,
-        );
-        match &cookie.get_reply() {
-            Ok(reply)
-                if reply.format() == 32 && reply.type_() == xcb::ATOM_WINDOW
-                    && reply.bytes_after() == 0 && reply.value_len() == 1 =>
-            {
-                // Not pretty. Assumes that xcb::Window is an u32
-                let buf = reply.value() as &[xcb::Window];
-                Ok(buf[0])
+    impl Stalker {
+        pub fn new() -> Self {
+            let (conn, screen_num) = xcb::Connection::connect(None).unwrap();
+            let root_window = {
+                let setup = conn.get_setup();
+                let screen = setup.roots().nth(screen_num as usize).unwrap();
+                screen.root()
+            };
+            let non_static_atoms = NonStaticAtoms::new(&conn);
+
+            // Listen to property changes for root window.
+            // This is where the active window property is maintained.
+            let values = [(xcb::CW_EVENT_MASK, xcb::EVENT_MASK_PROPERTY_CHANGE)];
+            xcb::change_window_attributes(&conn, root_window, &values);
+            conn.flush();
+
+            Stalker {
+                connection: conn,
+                root_window: root_window,
+                non_static_atoms: non_static_atoms,
             }
-            Ok(_) => Err("get_active_window: wrong reply format"),
-            Err(_) => Err("Failed to get active window id"),
         }
-    }
 
-    fn get_window_title(&self, window: xcb::Window) -> Result<String, &str> {
-        let cookie = xcb::get_property(
-            &self.connection,
-            false,
-            window,
-            xcb::ATOM_WM_NAME,
-            xcb::ATOM_STRING,
-            0,
-            1024,
-        );
-        match cookie.get_reply() {
-            Ok(reply) => if let Ok(title) = std::str::from_utf8(reply.value()) {
-                Ok(String::from(title))
-            } else {
-                Err("get_window_title: not utf8")
-            },
-            Err(_) => Err("Unable to get window title"),
-        }
-        // TODO apply same strategy as before: test with 3 atoms
-    }
-
-    fn handle_events(&self) {
-        // TODO tokio-ify
-        while let Some(event) = self.connection.wait_for_event() {
-            let rt = event.response_type();
-            if rt == xcb::PROPERTY_NOTIFY {
-                let event: &xcb::PropertyNotifyEvent = unsafe { xcb::cast_event(&event) };
-                if event.window() == self.root_window
-                    && event.atom() == self.non_static_atoms.active_window
-                    && event.state() == xcb::PROPERTY_NEW_VALUE as u8
+        fn get_active_window(&self) -> Result<xcb::Window, &str> {
+            let cookie = xcb::get_property(
+                &self.connection,
+                false,
+                self.root_window,
+                self.non_static_atoms.active_window,
+                xcb::ATOM_WINDOW,
+                0,
+                (std::mem::size_of::<xcb::Window>() / 4) as u32,
+            );
+            match &cookie.get_reply() {
+                Ok(reply)
+                    if reply.format() == 32 && reply.type_() == xcb::ATOM_WINDOW
+                        && reply.bytes_after() == 0
+                        && reply.value_len() == 1 =>
                 {
-                    let w = self.get_active_window().unwrap();
-                    let title = self.get_window_title(w).unwrap();
-                    println!("active_window = '{}' {:x}", title, w);
+                    // Not pretty. Assumes that xcb::Window is an u32
+                    let buf = reply.value() as &[xcb::Window];
+                    Ok(buf[0])
+                }
+                Ok(_) => Err("get_active_window: wrong reply format"),
+                Err(_) => Err("Failed to get active window id"),
+            }
+        }
+
+        pub fn handle_events(&self) {
+            // TODO tokio-ify
+            while let Some(event) = self.connection.wait_for_event() {
+                let rt = event.response_type();
+                if rt == xcb::PROPERTY_NOTIFY {
+                    let event: &xcb::PropertyNotifyEvent = unsafe { xcb::cast_event(&event) };
+                    if event.window() == self.root_window
+                        && event.atom() == self.non_static_atoms.active_window
+                        && event.state() == xcb::PROPERTY_NEW_VALUE as u8
+                    {
+                        let w = self.get_active_window().unwrap();
+                        let (title, class) = {
+                            let title = GetTextPropertyCookie::new(
+                                &self.connection,
+                                w,
+                                xcb::ATOM_WM_NAME,
+                                &self.non_static_atoms,
+                            );
+                            let class = GetTextPropertyCookie::new(
+                                &self.connection,
+                                w,
+                                xcb::ATOM_WM_CLASS,
+                                &self.non_static_atoms,
+                            );
+                            (title.get(), class.get())
+                        };
+                        // Class contains two strings split by \0 TODO get first half ?
+                        println!("active_window = '{:?}' '{:?}' {:x}", title, class, w);
+                    }
                 }
             }
         }
     }
-}
 
-impl std::os::unix::io::AsRawFd for XcbStalker {
-    fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
-        let raw_handle = self.connection.get_raw_conn();
-        unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
-    }
-}
-
-impl mio::Evented for XcbStalker {
-    fn register(
-        &self,
-        poll: &mio::Poll,
-        token: mio::Token,
-        interest: mio::Ready,
-        opts: mio::PollOpt,
-    ) -> io::Result<()> {
-        println!("Registered!");
-        mio::unix::EventedFd(&self.as_raw_fd()).register(poll, token, interest, opts)
+    struct NonStaticAtoms {
+        active_window: xcb::Atom,
+        utf8_string: xcb::Atom,
+        compound_text: xcb::Atom,
     }
 
-    fn reregister(
-        &self,
-        poll: &mio::Poll,
-        token: mio::Token,
-        interest: mio::Ready,
-        opts: mio::PollOpt,
-    ) -> io::Result<()> {
-        println!("Reregistered!");
-        mio::unix::EventedFd(&self.as_raw_fd()).reregister(poll, token, interest, opts)
+    impl NonStaticAtoms {
+        fn new(conn: &xcb::Connection) -> Self {
+            let active_window_cookie = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
+            let utf8_string_cookie = xcb::intern_atom(&conn, true, "UTF8_STRING");
+            let compound_text_cookie = xcb::intern_atom(&conn, true, "COMPOUND_TEXT");
+            NonStaticAtoms {
+                active_window: active_window_cookie.get_reply().unwrap().atom(),
+                utf8_string: utf8_string_cookie.get_reply().unwrap().atom(),
+                compound_text: compound_text_cookie.get_reply().unwrap().atom(),
+            }
+        }
     }
 
-    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        println!("Deregistered!");
-        mio::unix::EventedFd(&self.as_raw_fd()).deregister(poll)
+    struct GetTextPropertyCookie<'a> {
+        as_string: xcb::GetPropertyCookie<'a>,
+        as_utf8_string: xcb::GetPropertyCookie<'a>,
+        as_compound_string: xcb::GetPropertyCookie<'a>,
+    }
+
+    impl<'a> GetTextPropertyCookie<'a> {
+        fn new(
+            conn: &'a xcb::Connection,
+            window: xcb::Window,
+            atom: xcb::Atom,
+            non_static_atoms: &NonStaticAtoms,
+        ) -> Self {
+            GetTextPropertyCookie {
+                as_string: xcb::get_property(conn, false, window, atom, xcb::ATOM_STRING, 0, 1024),
+                as_utf8_string: xcb::get_property(
+                    conn,
+                    false,
+                    window,
+                    atom,
+                    non_static_atoms.utf8_string,
+                    0,
+                    1024,
+                ),
+                as_compound_string: xcb::get_property(
+                    conn,
+                    false,
+                    window,
+                    atom,
+                    non_static_atoms.compound_text,
+                    0,
+                    1024,
+                ),
+            }
+        }
+
+        fn get(&self) -> Option<String> {
+            let (as_string, as_utf8_string, as_compound_string) = (
+                self.as_string.get_reply(),
+                self.as_utf8_string.get_reply(),
+                self.as_compound_string.get_reply(),
+            );
+            if let Ok(reply) = as_string {
+                if let Ok(text) = std::str::from_utf8(reply.value()) {
+                    return Some(String::from(text));
+                }
+            }
+            if let Ok(reply) = as_utf8_string {
+                if let Ok(text) = std::str::from_utf8(reply.value()) {
+                    return Some(String::from(text));
+                }
+            }
+            if let Ok(reply) = as_compound_string {
+                if let Ok(text) = std::str::from_utf8(reply.value()) {
+                    return Some(String::from(text));
+                }
+            }
+            None
+        }
+    }
+
+    impl std::os::unix::io::AsRawFd for Stalker {
+        fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
+            let raw_handle = self.connection.get_raw_conn();
+            unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
+        }
+    }
+
+    impl mio::Evented for Stalker {
+        fn register(
+            &self,
+            poll: &mio::Poll,
+            token: mio::Token,
+            interest: mio::Ready,
+            opts: mio::PollOpt,
+        ) -> io::Result<()> {
+            println!("Registered!");
+            mio::unix::EventedFd(&self.as_raw_fd()).register(poll, token, interest, opts)
+        }
+
+        fn reregister(
+            &self,
+            poll: &mio::Poll,
+            token: mio::Token,
+            interest: mio::Ready,
+            opts: mio::PollOpt,
+        ) -> io::Result<()> {
+            println!("Reregistered!");
+            mio::unix::EventedFd(&self.as_raw_fd()).reregister(poll, token, interest, opts)
+        }
+
+        fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
+            println!("Deregistered!");
+            mio::unix::EventedFd(&self.as_raw_fd()).deregister(poll)
+        }
     }
 }
 
@@ -275,8 +334,8 @@ fn main() {
         println!("test: {}", db.file.metadata().unwrap().len());
     }
 
-    let xcb_stalker = XcbStalker::new();
-    xcb_stalker.handle_events();
+    let stalker = xcb_stalker::Stalker::new();
+    stalker.handle_events();
 
     // TODO wrap file descriptor for tokio
 
