@@ -1,8 +1,10 @@
+#![deny(deprecated)]
+extern crate futures;
 extern crate mio;
 extern crate tokio;
 
 #[derive(Debug)]
-struct ActiveWindowMetadata {
+pub struct ActiveWindowMetadata {
     title: Option<String>,
     class: Option<String>,
 }
@@ -47,16 +49,23 @@ impl Classifier {
 /// Xcb interface
 mod xcb_stalker {
     extern crate xcb;
-    use ActiveWindowMetadata;
+    use futures;
     use mio;
     use std;
     use std::io;
     use std::os::unix::io::AsRawFd;
+    use tokio;
+
+    pub use ActiveWindowMetadata;
 
     pub struct Stalker {
         connection: xcb::Connection,
         root_window: xcb::Window,
         non_static_atoms: NonStaticAtoms,
+    }
+
+    pub struct ActiveWindowStream {
+        stalker: tokio::reactor::PollEvented2<Stalker>,
     }
 
     impl Stalker {
@@ -85,27 +94,9 @@ mod xcb_stalker {
             }
         }
 
-        fn get_active_window(&self) -> Option<xcb::Window> {
-            let cookie = xcb::get_property(
-                &self.connection,
-                false,
-                self.root_window,
-                self.non_static_atoms.active_window,
-                xcb::ATOM_WINDOW,
-                0,
-                (std::mem::size_of::<xcb::Window>() / 4) as u32,
-            );
-            match &cookie.get_reply() {
-                Ok(reply)
-                    if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
-                        && reply.value_len() == 1
-                        && reply.format() == 32 =>
-                {
-                    // Not pretty. Assumes that xcb::Window is an u32
-                    let buf: &[xcb::Window] = reply.value();
-                    Some(buf[0])
-                }
-                _ => None,
+        pub fn active_window_stream(self) -> ActiveWindowStream {
+            ActiveWindowStream {
+                stalker: tokio::reactor::PollEvented2::new(self),
             }
         }
 
@@ -149,6 +140,30 @@ mod xcb_stalker {
                         println!("active_window = {:?}", metadata);
                     }
                 }
+            }
+        }
+
+        fn get_active_window(&self) -> Option<xcb::Window> {
+            let cookie = xcb::get_property(
+                &self.connection,
+                false,
+                self.root_window,
+                self.non_static_atoms.active_window,
+                xcb::ATOM_WINDOW,
+                0,
+                (std::mem::size_of::<xcb::Window>() / 4) as u32,
+            );
+            match &cookie.get_reply() {
+                Ok(reply)
+                    if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
+                        && reply.value_len() == 1
+                        && reply.format() == 32 =>
+                {
+                    // Not pretty. Assumes that xcb::Window is an u32
+                    let buf: &[xcb::Window] = reply.value();
+                    Some(buf[0])
+                }
+                _ => None,
             }
         }
     }
@@ -259,6 +274,15 @@ mod xcb_stalker {
         }
     }
 
+    impl futures::stream::Stream for ActiveWindowStream {
+        type Item = ActiveWindowMetadata;
+        type Error = io::Error;
+
+        fn poll(&mut self) -> futures::Poll<Option<Self::Item>, io::Error> {
+            println!("poll called");
+            Ok(futures::Async::Ready(None))
+        }
+    }
 }
 
 // interesting:
@@ -344,7 +368,7 @@ fn main() {
     }
 
     let stalker = xcb_stalker::Stalker::new();
-    stalker.handle_events();
+    //stalker.handle_events();
 
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
@@ -356,6 +380,16 @@ fn main() {
     use tokio::prelude::*;
     use tokio::runtime::current_thread::Runtime;
     let mut runtime = Runtime::new().expect("unable to create tokio runtime");
+    {
+        let task = stalker
+            .active_window_stream()
+            .for_each(|active_window| {
+                println!("ActiveWindowMetadata = {:?}", active_window);
+                Ok(())
+            })
+            .map_err(|err| panic!("crash"));
+        runtime.spawn(task);
+    }
     {
         // Periodically write counter value
         use std::time::{Duration, Instant};
