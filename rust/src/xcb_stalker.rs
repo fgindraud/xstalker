@@ -4,32 +4,38 @@ extern crate xcb; // for xcb_stalker
 
 use std;
 use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::AsRawFd;
 use tokio::prelude::*;
 use tokio::reactor::PollEvented2 as PollEvented; // Tokio is changing interfaces, temporary
 
+/// This is the type used to output information about the active window.
+/// Defined in main.
 pub use super::ActiveWindowMetadata;
 
-// Main struct
-pub struct Stalker {
+/// Listener for changes of the active window using xcb.
+/// Owns the connection to the X server.
+struct Stalker {
     connection: xcb::Connection,
     root_window: xcb::Window,
     non_static_atoms: NonStaticAtoms,
 }
 
-/// Store non static useful atoms
+/// Store non static useful atoms (impl detail of Stalker).
 struct NonStaticAtoms {
     active_window: xcb::Atom,
     utf8_string: xcb::Atom,
     compound_text: xcb::Atom,
 }
 
-pub struct ActiveWindowChanges {
-    inner: PollEvented<Stalker>,
+/// Ongoing request for a text property (impl detail of Stalker).
+struct GetTextPropertyCookie<'a> {
+    cookie: xcb::GetPropertyCookie<'a>,
+    non_static_atoms: &'a NonStaticAtoms,
 }
 
 impl Stalker {
-    pub fn new() -> Self {
+    /// Create and configure a new listener.
+    fn new() -> Self {
         // Xcb Boilerplate TODO error handling ?
         let (conn, screen_num) = xcb::Connection::connect(None).unwrap();
         let root_window = {
@@ -54,24 +60,15 @@ impl Stalker {
         }
     }
 
-    pub fn get_active_window_metadata(&self) -> ActiveWindowMetadata {
+    /// Get the current active window metadata.
+    fn get_active_window_metadata(&self) -> ActiveWindowMetadata {
         let w = self.get_active_window().unwrap();
         // Requests
-        let title = get_text_property(
-            &self.connection,
-            w,
-            xcb::ATOM_WM_NAME,
-            &self.non_static_atoms,
-        );
-        let class = get_text_property(
-            &self.connection,
-            w,
-            xcb::ATOM_WM_CLASS,
-            &self.non_static_atoms,
-        );
+        let title = self.get_text_property(w, xcb::ATOM_WM_NAME);
+        let class = self.get_text_property(w, xcb::ATOM_WM_CLASS);
         // Process replies
-        let title = title.get();
-        let class = class.get().map(|mut text| match text.find('\0') {
+        let title = title.get_reply();
+        let class = class.get_reply().map(|mut text| match text.find('\0') {
             Some(offset) => {
                 text.truncate(offset);
                 text
@@ -84,7 +81,9 @@ impl Stalker {
         }
     }
 
-    pub fn process_events(&self) -> bool {
+    /// Process all pending events.
+    /// Return true if the active window metadata has changed, and must be queried again.
+    fn process_events(&self) -> bool {
         let mut active_window_changed = false;
         while let Some(event) = self.connection.poll_for_event() {
             let rt = event.response_type();
@@ -101,6 +100,7 @@ impl Stalker {
         active_window_changed
     }
 
+    /// Impl detail: get active window id.
     fn get_active_window(&self) -> Option<xcb::Window> {
         let cookie = xcb::get_property(
             &self.connection,
@@ -123,6 +123,26 @@ impl Stalker {
             _ => None,
         }
     }
+
+    /// Request a text property, returning a handle on the request.
+    fn get_text_property<'a>(
+        &'a self,
+        window: xcb::Window,
+        atom: xcb::Atom,
+    ) -> GetTextPropertyCookie<'a> {
+        GetTextPropertyCookie {
+            cookie: xcb::get_property(
+                &self.connection,
+                false,
+                window,
+                atom,
+                xcb::ATOM_ANY,
+                0,
+                1024,
+            ),
+            non_static_atoms: &self.non_static_atoms,
+        }
+    }
 }
 
 impl NonStaticAtoms {
@@ -139,28 +159,9 @@ impl NonStaticAtoms {
     }
 }
 
-/// Launch a request for a text property
-fn get_text_property<'a>(
-    conn: &'a xcb::Connection,
-    window: xcb::Window,
-    atom: xcb::Atom,
-    non_static_atoms: &'a NonStaticAtoms,
-) -> GetTextPropertyCookie<'a> {
-    GetTextPropertyCookie {
-        cookie: xcb::get_property(conn, false, window, atom, xcb::ATOM_ANY, 0, 1024),
-        non_static_atoms: non_static_atoms,
-    }
-}
-
-/// Cookie: ongoing request for a text property
-struct GetTextPropertyCookie<'a> {
-    cookie: xcb::GetPropertyCookie<'a>,
-    non_static_atoms: &'a NonStaticAtoms,
-}
-
 impl<'a> GetTextPropertyCookie<'a> {
     /// Retrieve the text property as a String, or None if error.
-    fn get(&self) -> Option<String> {
+    fn get_reply(&self) -> Option<String> {
         if let Ok(reply) = self.cookie.get_reply() {
             if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0 {
                 match reply.type_() {
@@ -182,13 +183,7 @@ impl<'a> GetTextPropertyCookie<'a> {
     }
 }
 
-impl AsRawFd for Stalker {
-    fn as_raw_fd(&self) -> RawFd {
-        let raw_handle = self.connection.get_raw_conn();
-        unsafe { xcb::ffi::xcb_get_file_descriptor(raw_handle) }
-    }
-}
-
+/// Polling support for the listener: just use the underlying file descriptor.
 impl mio::Evented for Stalker {
     fn register(
         &self,
@@ -197,7 +192,7 @@ impl mio::Evented for Stalker {
         interest: mio::Ready,
         opts: mio::PollOpt,
     ) -> io::Result<()> {
-        mio::unix::EventedFd(&self.as_raw_fd()).register(poll, token, interest, opts)
+        mio::unix::EventedFd(&self.connection.as_raw_fd()).register(poll, token, interest, opts)
     }
 
     fn reregister(
@@ -207,36 +202,41 @@ impl mio::Evented for Stalker {
         interest: mio::Ready,
         opts: mio::PollOpt,
     ) -> io::Result<()> {
-        mio::unix::EventedFd(&self.as_raw_fd()).reregister(poll, token, interest, opts)
+        mio::unix::EventedFd(&self.connection.as_raw_fd()).reregister(poll, token, interest, opts)
     }
 
     fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        mio::unix::EventedFd(&self.as_raw_fd()).deregister(poll)
+        mio::unix::EventedFd(&self.connection.as_raw_fd()).deregister(poll)
     }
 }
 
+/// Asynchronous stream producing ActiveWindowMetadata when active window changes.
+pub struct ActiveWindowChanges {
+    inner: PollEvented<Stalker>,
+}
+
 impl ActiveWindowChanges {
+    /// Create a new stream.
     pub fn new() -> Self {
         ActiveWindowChanges {
             inner: PollEvented::new(Stalker::new()),
         }
     }
-    // TODO to be the main struct
-    // TODO evented on xcb::connection should be better
-    // manual method to get ActiveWindowMetadata for init
+
+    /// Request the current metadata, irrespective of the stream state.
+    /// This can be used for initialisation, before the first change.
+    pub fn get_current_metadata(&self) -> ActiveWindowMetadata {
+        self.inner.get_ref().get_active_window_metadata()
+    }
 }
 
+/// Asynchronous Stream implementation.
 impl Stream for ActiveWindowChanges {
     type Item = ActiveWindowMetadata;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
-        // FIXME this works, but its a mess
-        // TODO stream for events, and build upon that ?
-        // TODO for ActiveWindowChanges: add initial value ? or feed it manually before starting
-        // tokio ?
-
-        // Check if readable
+        // Check if readable (this also registers the fd once).
         match self.inner.poll_read_ready(mio::Ready::readable()) {
             Ok(Async::Ready(_)) => (),
             Ok(Async::NotReady) => return Ok(Async::NotReady),
@@ -244,8 +244,9 @@ impl Stream for ActiveWindowChanges {
         }
         // Read all events
         let active_window_changed = self.inner.get_ref().process_events();
+
         // Reset read flag, will be set again if data arrives on socket
-        self.inner.clear_read_ready(mio::Ready::readable());
+        self.inner.clear_read_ready(mio::Ready::readable())?;
 
         if active_window_changed {
             // get_active_window_metadata requests replies are all consumed
