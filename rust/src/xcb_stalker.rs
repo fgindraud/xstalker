@@ -33,11 +33,26 @@ struct GetTextPropertyCookie<'a> {
     non_static_atoms: &'a NonStaticAtoms,
 }
 
+fn conn_to_io_error(err: xcb::ConnError) -> io::Error {
+    use self::io::{Error, ErrorKind};
+    use self::xcb::ConnError::*;
+    match err {
+        Connection | ClosedFdPassingFailed => {
+            Error::new(ErrorKind::Other, "Xcb connection io error")
+        }
+        ClosedExtNotSupported => Error::new(ErrorKind::NotFound, "Xcb extension unsupported"),
+        ClosedMemInsufficient => Error::new(ErrorKind::Other, "Xcb mem insufficient"),
+        ClosedReqLenExceed => Error::new(ErrorKind::InvalidData, "Xcb request length exceeded"),
+        ClosedParseErr => Error::new(ErrorKind::InvalidInput, "Xcb invalid DISPLAY"),
+        ClosedInvalidScreen => Error::new(ErrorKind::InvalidInput, "Xcb invalid screen"),
+    }
+}
+
 impl Stalker {
     /// Create and configure a new listener.
-    fn new() -> Self {
-        // Xcb Boilerplate TODO error handling ?
-        let (conn, screen_num) = xcb::Connection::connect(None).unwrap();
+    fn new() -> io::Result<Self> {
+        // Xcb Boilerplate
+        let (conn, screen_num) = xcb::Connection::connect(None).map_err(conn_to_io_error)?;
         let root_window = {
             let setup = conn.get_setup();
             let screen = setup.roots().nth(screen_num as usize).unwrap();
@@ -45,19 +60,20 @@ impl Stalker {
         };
 
         // Get useful non static atoms for later.
-        let non_static_atoms = NonStaticAtoms::new(&conn);
+        let non_static_atoms = NonStaticAtoms::new(&conn)?;
 
         // Listen to property changes for root window.
         // This is where the active window property is maintained.
         let values = [(xcb::CW_EVENT_MASK, xcb::EVENT_MASK_PROPERTY_CHANGE)];
         xcb::change_window_attributes(&conn, root_window, &values);
         conn.flush();
+        conn.has_error().map_err(conn_to_io_error)?;
 
-        Stalker {
+        Ok(Stalker {
             connection: conn,
             root_window: root_window,
             non_static_atoms: non_static_atoms,
-        }
+        })
     }
 
     /// Get the current active window metadata.
@@ -147,15 +163,16 @@ impl Stalker {
 
 impl NonStaticAtoms {
     /// Get values from server
-    fn new(conn: &xcb::Connection) -> Self {
+    fn new(conn: &xcb::Connection) -> io::Result<Self> {
+        let to_error = |_| io::Error::new(io::ErrorKind::Other, "xcb_intern_atom");
         let active_window_cookie = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
         let utf8_string_cookie = xcb::intern_atom(&conn, true, "UTF8_STRING");
         let compound_text_cookie = xcb::intern_atom(&conn, true, "COMPOUND_TEXT");
-        NonStaticAtoms {
-            active_window: active_window_cookie.get_reply().unwrap().atom(),
-            utf8_string: utf8_string_cookie.get_reply().unwrap().atom(),
-            compound_text: compound_text_cookie.get_reply().unwrap().atom(),
-        }
+        Ok(NonStaticAtoms {
+            active_window: active_window_cookie.get_reply().map_err(to_error)?.atom(),
+            utf8_string: utf8_string_cookie.get_reply().map_err(to_error)?.atom(),
+            compound_text: compound_text_cookie.get_reply().map_err(to_error)?.atom(),
+        })
     }
 }
 
@@ -217,10 +234,10 @@ pub struct ActiveWindowChanges {
 
 impl ActiveWindowChanges {
     /// Create a new stream.
-    pub fn new() -> Self {
-        ActiveWindowChanges {
-            inner: PollEvented::new(Stalker::new()),
-        }
+    pub fn new() -> io::Result<Self> {
+        Ok(ActiveWindowChanges {
+            inner: PollEvented::new(Stalker::new()?),
+        })
     }
 
     /// Request the current metadata, irrespective of the stream state.

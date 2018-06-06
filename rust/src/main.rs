@@ -138,6 +138,7 @@ fn main() {
     {
         let counter = Rc::clone(&counter);
         let task = ActiveWindowChanges::new()
+            .unwrap()
             .for_each(move |active_window| {
                 // debug / test code
                 println!("ActiveWindowMetadata = {:?}", active_window);
