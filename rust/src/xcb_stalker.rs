@@ -77,8 +77,8 @@ impl Stalker {
     }
 
     /// Get the current active window metadata.
-    fn get_active_window_metadata(&self) -> ActiveWindowMetadata {
-        let w = self.get_active_window().unwrap();
+    fn get_active_window_metadata(&self) -> io::Result<ActiveWindowMetadata> {
+        let w = self.get_active_window()?;
         // Requests
         let title = self.get_text_property(w, xcb::ATOM_WM_NAME);
         let class = self.get_text_property(w, xcb::ATOM_WM_CLASS);
@@ -91,10 +91,10 @@ impl Stalker {
             }
             None => text,
         });
-        ActiveWindowMetadata {
+        Ok(ActiveWindowMetadata {
             title: title,
             class: class,
-        }
+        })
     }
 
     /// Process all pending events.
@@ -117,7 +117,8 @@ impl Stalker {
     }
 
     /// Impl detail: get active window id.
-    fn get_active_window(&self) -> Option<xcb::Window> {
+    /// Not finding the property is an error.
+    fn get_active_window(&self) -> io::Result<xcb::Window> {
         let cookie = xcb::get_property(
             &self.connection,
             false,
@@ -134,9 +135,16 @@ impl Stalker {
             {
                 // Not pretty. Assumes that xcb::Window is an u32
                 let buf: &[xcb::Window] = reply.value();
-                Some(buf[0])
+                Ok(buf[0])
             }
-            _ => None,
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "xcb_get_property(active_window): invalid reply",
+            )),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "xcb_get_property(active_window): failure",
+            )),
         }
     }
 
@@ -178,6 +186,7 @@ impl NonStaticAtoms {
 
 impl<'a> GetTextPropertyCookie<'a> {
     /// Retrieve the text property as a String, or None if error.
+    /// TODO better handling of unknown atom ? warning ?
     fn get_reply(&self) -> Option<String> {
         if let Ok(reply) = self.cookie.get_reply() {
             if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0 {
@@ -242,7 +251,7 @@ impl ActiveWindowChanges {
 
     /// Request the current metadata, irrespective of the stream state.
     /// This can be used for initialisation, before the first change.
-    pub fn get_current_metadata(&self) -> ActiveWindowMetadata {
+    pub fn get_current_metadata(&self) -> io::Result<ActiveWindowMetadata> {
         self.inner.get_ref().get_active_window_metadata()
     }
 }
@@ -267,9 +276,9 @@ impl Stream for ActiveWindowChanges {
 
         if active_window_changed {
             // get_active_window_metadata requests replies are all consumed
-            Ok(Async::Ready(Some(
-                self.inner.get_ref().get_active_window_metadata(),
-            )))
+            Ok(Async::Ready(Some(self.inner
+                .get_ref()
+                .get_active_window_metadata()?)))
         } else {
             Ok(Async::NotReady)
         }
