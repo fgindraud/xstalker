@@ -24,7 +24,7 @@ struct NonStaticAtoms {
     compound_text: xcb::Atom,
 }
 
-pub struct ActiveWindowStream {
+pub struct ActiveWindowChanges {
     inner: PollEvented<Stalker>,
 }
 
@@ -99,10 +99,6 @@ impl Stalker {
             }
         }
         active_window_changed
-    }
-
-    pub fn active_window_stream(self) -> ActiveWindowStream {
-        ActiveWindowStream::new(self)
     }
 
     fn get_active_window(&self) -> Option<xcb::Window> {
@@ -219,22 +215,25 @@ impl mio::Evented for Stalker {
     }
 }
 
-impl ActiveWindowStream {
-    fn new(stalker: Stalker) -> Self {
-        ActiveWindowStream {
-            inner: PollEvented::new(stalker),
+impl ActiveWindowChanges {
+    pub fn new() -> Self {
+        ActiveWindowChanges {
+            inner: PollEvented::new(Stalker::new()),
         }
     }
+    // TODO to be the main struct
+    // TODO evented on xcb::connection should be better
+    // manual method to get ActiveWindowMetadata for init
 }
 
-impl Stream for ActiveWindowStream {
+impl Stream for ActiveWindowChanges {
     type Item = ActiveWindowMetadata;
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
         // FIXME this works, but its a mess
         // TODO stream for events, and build upon that ?
-        // TODO for ActiveWindowStream: add initial value ? or feed it manually before starting
+        // TODO for ActiveWindowChanges: add initial value ? or feed it manually before starting
         // tokio ?
 
         // Check if readable

@@ -12,6 +12,7 @@ pub struct ActiveWindowMetadata {
 
 /// Xcb interface
 mod xcb_stalker;
+use xcb_stalker::ActiveWindowChanges;
 
 /// Classifier: stores filters used to determine category of time slice
 struct Classifier {
@@ -124,9 +125,6 @@ fn main() {
         println!("test: {}", db.file.metadata().unwrap().len());
     }
 
-    let stalker = xcb_stalker::Stalker::new();
-    //stalker.handle_events();
-
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -139,8 +137,7 @@ fn main() {
     let mut runtime = Runtime::new().expect("unable to create tokio runtime");
     {
         let counter = Rc::clone(&counter);
-        let task = stalker
-            .active_window_stream()
+        let task = ActiveWindowChanges::new()
             .for_each(move |active_window| {
                 // debug / test code
                 println!("ActiveWindowMetadata = {:?}", active_window);
