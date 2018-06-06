@@ -6,7 +6,7 @@ use std;
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use tokio::prelude::*;
-use tokio::reactor::PollEvented2 as PollEvented;
+use tokio::reactor::PollEvented2 as PollEvented; // Tokio is changing interfaces, temporary
 
 pub use super::ActiveWindowMetadata;
 

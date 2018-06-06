@@ -7,6 +7,9 @@ pub struct ActiveWindowMetadata {
     class: Option<String>,
 }
 
+// TODO: define trait for stream of ActiveWindowMetadata
+// make xcb_stalker return a box<trait obj> to make it independent from other stuff
+
 /// Xcb interface
 mod xcb_stalker;
 
