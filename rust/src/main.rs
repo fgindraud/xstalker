@@ -1,14 +1,12 @@
 #![deny(deprecated)]
 extern crate tokio;
+use std::io;
 
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
     title: Option<String>,
     class: Option<String>,
 }
-
-// TODO: define trait for stream of ActiveWindowMetadata
-// make xcb_stalker return a box<trait obj> to make it independent from other stuff
 
 /// Xcb interface
 mod xcb_stalker;
@@ -78,26 +76,34 @@ use std::fs::File;
 use std::time::Duration;
 struct TimeSliceDatabase {
     file: File,
+    current_category: (),
     duration_by_category_current_interval: HashMap<String, Duration>,
 }
 impl TimeSliceDatabase {
-    pub fn new(filename: &str) -> Result<Self, std::io::Error> {
+    pub fn new(filename: &str) -> io::Result<Self> {
         use std::fs::OpenOptions;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open("test")?;
+            .open(filename)?;
         Ok(TimeSliceDatabase {
             file: file,
+            current_category: (),
             duration_by_category_current_interval: HashMap::new(),
         })
     }
-    pub fn start_time_slice(category: &str) {
-        unimplemented!();
+
+    pub fn set_initial_category(&mut self, category: Option<&str>) {
+        println!("Initial category: {:?}", category)
     }
-    pub fn end_time_slice(category: &str) {
-        unimplemented!();
+
+    pub fn category_changed(&mut self, category: Option<&str>) {
+        println!("Category change: {:?}", category)
+    }
+
+    pub fn store(&mut self) {
+        println!("Write to disk")
     }
 }
 
@@ -119,16 +125,12 @@ fn main() {
     });
     classifier.append_filter(&"unknown", |_| true);
 
-    {
-        // File manip test
-        let db = TimeSliceDatabase::new("test").expect("failed to create database");
-        println!("test: {}", db.file.metadata().unwrap().len());
-    }
+    let db = TimeSliceDatabase::new("test").expect("failed to create database");
 
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
     use std::rc::Rc;
-    let counter = Rc::new(RefCell::new(0)); // Needs to be cloned explicitely
+    let db = Rc::new(RefCell::new(db));
 
     // Create a tokio runtime to act as an event loop.
     // Single threaded is enough.
@@ -136,31 +138,35 @@ fn main() {
     use tokio::runtime::current_thread::Runtime;
     let mut runtime = Runtime::new().expect("unable to create tokio runtime");
     {
-        let counter = Rc::clone(&counter);
-        let task = ActiveWindowChanges::new()
-            .unwrap()
+        // React to active window changes
+        let db = Rc::clone(&db);
+        let active_window_changes = ActiveWindowChanges::new().unwrap();
+        db.borrow_mut().set_initial_category(
+            classifier.classify(&active_window_changes.get_current_metadata().unwrap()),
+        );
+        let task = active_window_changes
             .for_each(move |active_window| {
-                // debug / test code
-                println!("ActiveWindowMetadata = {:?}", active_window);
-                let mut counter = counter.borrow_mut();
-                *counter += 1;
+                //println!("ActiveWindowMetadata = {:?}", active_window);
+                db.borrow_mut()
+                    .category_changed(classifier.classify(&active_window));
                 Ok(())
             })
-            .map_err(|err| panic!("crash"));
+            .map_err(|err| panic!("ActiveWindowChanges listener failed: {}", err));
         runtime.spawn(task);
     }
     {
-        // Periodically write counter value
+        // Periodically write database to file
         use std::time::{Duration, Instant};
         use tokio::timer::Interval;
-        let counter = Rc::clone(&counter);
-        let store_data_task = Interval::new(Instant::now(), Duration::from_secs(1))
-            .for_each(move |instant| {
-                println!("counter {}", counter.borrow());
+        let db = Rc::clone(&db);
+        let interval = Duration::from_secs(10);
+        let task = Interval::new(Instant::now() + interval, interval)
+            .for_each(move |_instant| {
+                db.borrow_mut().store();
                 Ok(())
             })
-            .map_err(|err| panic!("store_data_task failed: {:?}", err));
-        runtime.spawn(store_data_task);
+            .map_err(|err| panic!("Write to file task failed: {}", err));
+        runtime.spawn(task);
     }
     runtime.run().expect("tokio runtime failure")
 }
