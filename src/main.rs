@@ -55,19 +55,18 @@ impl Classifier {
  * [start hour, ISO machin]\t[nb_sec cat0]\t...
  *
  * TODO
+ * parsing iso 8601: chrono crate TODO
+ * two interval streams:
+ * - one for write_to_disk,
+ * - one for time slice interval
+ *
+ * two structs:
+ * one for managing the file (lookup last line, etc).
+ * one for the current interval time slices
+ *
  * At startup, look header.
  * New category: add, rewrite file
  * Removed category: add to set, with 0 (will not be incremented as no filter gives it)
- *
- * Every change from xcb: process all events, then get new category.
- * if changed from before: change_time_slice(old_cat, new_cat)
- *
- * Every tick (60s): dump
- * if now() > time_last_line + dump_interval: new line
- * else: rewrite last line
- *
- * start: get init category from xcb
- * start time slice
  */
 
 /// Database
