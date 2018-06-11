@@ -1,6 +1,10 @@
 #![deny(deprecated)]
 extern crate tokio;
+use std::collections::HashMap;
+use std::fs;
+use std::fs::File;
 use std::io;
+use std::io::{Seek, Write};
 use std::time;
 
 #[derive(Debug)]
@@ -61,20 +65,15 @@ impl Classifier {
  * - one for write_to_disk,
  * - one for time slice interval
  *
- * two structs:
- * one for managing the file (lookup last line, etc).
- * one for the current interval time slices
- *
  * At startup, look header.
  * New category: add, rewrite file
  * Removed category: add to set, with 0 (will not be incremented as no filter gives it)
  */
 
-use std::collections::HashMap;
-
 struct CategoryDurationCounter {
     current_category: Option<String>,
     last_category_update: time::Instant,
+    started_recording_at: time::SystemTime,
     duration_by_category: HashMap<String, time::Duration>,
 }
 impl CategoryDurationCounter {
@@ -83,6 +82,7 @@ impl CategoryDurationCounter {
         CategoryDurationCounter {
             current_category: initial_category.map(|s| String::from(s)),
             last_category_update: time::Instant::now(),
+            started_recording_at: time::SystemTime::now(),
             duration_by_category: categories
                 .iter()
                 .map(|&s| (String::from(s), time::Duration::new(0, 0)))
@@ -105,12 +105,10 @@ impl CategoryDurationCounter {
 }
 
 /// Database
-use std::fs::File;
-use std::io::BufRead;
-use std::io::Seek;
 
 /// Read database file header, return categories if found
 fn read_current_database_categories(mut file: File) -> io::Result<(File, Option<Vec<String>>)> {
+    use std::io::BufRead;
     file.seek(io::SeekFrom::Start(0))?;
     let mut file = io::BufReader::new(file);
     let mut first_line = String::new();
@@ -130,36 +128,27 @@ fn read_current_database_categories(mut file: File) -> io::Result<(File, Option<
     ))
 }
 
-fn setup_database_for_categories(filename: &str, categories: &Vec<&str>) -> io::Result<()> {
-    use std::fs::OpenOptions;
-    let f = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(filename)?;
-    let (f, db_categories) = read_current_database_categories(f)?;
-    println!("Categories: {:?}", db_categories);
-    // Check file header
-    Ok(())
-}
-
 struct Database {
     file: File,
+    last_line_start_offset: u64,
 }
 impl Database {
     pub fn new(filename: &str, categories: &Vec<&str>) -> io::Result<Self> {
-        use std::fs::OpenOptions;
         match File::open(filename) {
             Ok(f) => unimplemented!(),
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
                 // Create a new database, print header
-                let f = OpenOptions::new()
+                let mut f = fs::OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create(true)
                     .open(filename)?;
-                // TODO
-                Ok(Database { file: f })
+                writeln!(&mut f, "Time\t{}", categories.join("\t"))?;
+                let next_line_offset = f.seek(io::SeekFrom::Current(0))?;
+                Ok(Database {
+                    file: f,
+                    last_line_start_offset: next_line_offset,
+                })
             }
             Err(e) => Err(e),
         }
@@ -171,9 +160,6 @@ impl Database {
 }
 
 fn main() -> io::Result<()> {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     // Timing
     let db_write_interval = time::Duration::from_secs(10);
 
@@ -188,6 +174,8 @@ fn main() -> io::Result<()> {
     classifier.append_filter(&"unknown", |_| true);
 
     // Setup entities
+    use std::cell::RefCell;
+    use std::rc::Rc;
     let (db, active_window_changes, category_duration_couter) = {
         let categories = classifier.categories();
 
