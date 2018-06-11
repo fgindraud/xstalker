@@ -130,12 +130,34 @@ fn read_current_database_categories(mut file: File) -> io::Result<(File, Option<
 
 struct Database {
     file: File,
-    last_line_start_offset: u64,
+    last_line_start_offset: usize,
 }
 impl Database {
     pub fn new(filename: &str, categories: &Vec<&str>) -> io::Result<Self> {
-        match File::open(filename) {
-            Ok(f) => unimplemented!(),
+        match fs::OpenOptions::new().read(true).write(true).open(filename) {
+            Ok(f) => {
+                use std::io::BufRead;
+                let mut reader = io::BufReader::new(f);
+                {
+                    // Check categories
+                    let mut first_line = String::new();
+                    reader.read_line(&mut first_line)?;
+                    let db_categories: Vec<&str> = first_line.split('\t').skip(1).collect();
+                    if &db_categories != categories {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!(
+                                "category mismatch: expected {:?}, got {:?}",
+                                categories, &db_categories
+                            ),
+                        ));
+                    }
+                }
+                // TODO Seek to start of last line
+                // TODO make an abstraction for reading / writing while maintaining cached info of
+                // cursor position.
+                unimplemented!()
+            }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
                 // Create a new database, print header
                 let mut f = fs::OpenOptions::new()
@@ -143,11 +165,11 @@ impl Database {
                     .write(true)
                     .create(true)
                     .open(filename)?;
-                writeln!(&mut f, "Time\t{}", categories.join("\t"))?;
-                let next_line_offset = f.seek(io::SeekFrom::Current(0))?;
+                let header = format!("Time\t{}\n", categories.join("\t"));
+                f.write_all(header.as_bytes())?;
                 Ok(Database {
                     file: f,
-                    last_line_start_offset: next_line_offset,
+                    last_line_start_offset: header.len(),
                 })
             }
             Err(e) => Err(e),
