@@ -106,6 +106,29 @@ impl CategoryDurationCounter {
 
 /// Database
 use std::fs::File;
+use std::io::BufRead;
+use std::io::Seek;
+
+/// Read database file header, return categories if found
+fn read_current_database_categories(mut file: File) -> io::Result<(File, Option<Vec<String>>)> {
+    file.seek(io::SeekFrom::Start(0))?;
+    let mut file = io::BufReader::new(file);
+    let mut first_line = String::new();
+    file.read_line(&mut first_line)?;
+    let categories: Vec<String> = first_line
+        .split('\t')
+        .skip(1)
+        .map(|s| String::from(s))
+        .collect();
+    Ok((
+        file.into_inner(),
+        if categories.is_empty() {
+            None
+        } else {
+            Some(categories)
+        },
+    ))
+}
 
 fn setup_database_for_categories(filename: &str, categories: &Vec<&str>) -> io::Result<()> {
     use std::fs::OpenOptions;
@@ -114,10 +137,9 @@ fn setup_database_for_categories(filename: &str, categories: &Vec<&str>) -> io::
         .write(true)
         .create(true)
         .open(filename)?;
+    let (f, db_categories) = read_current_database_categories(f)?;
+    println!("Categories: {:?}", db_categories);
     // Check file header
-    let f = io::BufReader::new(f);
-    let s = String::new();
-
     Ok(())
 }
 
@@ -125,14 +147,22 @@ struct Database {
     file: File,
 }
 impl Database {
-    pub fn new(filename: &str) -> io::Result<Self> {
+    pub fn new(filename: &str, categories: &Vec<&str>) -> io::Result<Self> {
         use std::fs::OpenOptions;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(filename)?;
-        Ok(Database { file: file })
+        match File::open(filename) {
+            Ok(f) => unimplemented!(),
+            Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
+                // Create a new database, print header
+                let f = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(filename)?;
+                // TODO
+                Ok(Database { file: f })
+            }
+            Err(e) => Err(e),
+        }
     }
 
     pub fn write_to_disk(&mut self) {
@@ -140,14 +170,10 @@ impl Database {
     }
 }
 
-fn get_last_line(file: &mut std::fs::File) -> String {
-    use std::io::{Seek, SeekFrom};
-
-    let _end = file.seek(SeekFrom::End(0));
-    String::from("")
-}
-
 fn main() -> io::Result<()> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     // Timing
     let db_write_interval = time::Duration::from_secs(10);
 
@@ -162,32 +188,37 @@ fn main() -> io::Result<()> {
     classifier.append_filter(&"unknown", |_| true);
 
     // Setup entities
-    let active_window_changes = ActiveWindowChanges::new()?;
+    let (db, active_window_changes, category_duration_couter) = {
+        let categories = classifier.categories();
 
-    let category_duration_couter = CategoryDurationCounter::new(
-        &classifier.categories(),
-        classifier.classify(&active_window_changes.get_current_metadata()?),
-    );
+        // Initial state
+        let db = Database::new("test", &categories)?;
+        let active_window_changes = ActiveWindowChanges::new()?;
+        let category_duration_couter = CategoryDurationCounter::new(
+            &categories,
+            classifier.classify(&active_window_changes.get_current_metadata()?),
+        );
 
-    let db = Database::new("test")?;
-
-    // Shared state in Rc<RefCell>: single threaded, needs mutability
-    use std::cell::RefCell;
-    use std::rc::Rc;
+        // Wrap in Rc for shared ownership when passed to tokio.
+        // Rc = single thread, RefCell for mutability when needed.
+        (
+            Rc::new(RefCell::new(db)),
+            active_window_changes,
+            Rc::new(RefCell::new(category_duration_couter)),
+        )
+    };
     let classifier = Rc::new(classifier);
-    let category_duration_couter = Rc::new(RefCell::new(category_duration_couter));
-    let db = Rc::new(RefCell::new(db));
 
-    // Create a tokio runtime to act as an event loop.
+    // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
     use tokio::prelude::*;
     use tokio::runtime::current_thread::Runtime;
     let mut runtime = Runtime::new()?;
     {
-        // React to active window changes
         let category_duration_couter = Rc::clone(&category_duration_couter);
         let classifier = Rc::clone(&classifier);
+        // React to active window changes
         let task = active_window_changes
             .for_each(move |active_window| {
                 category_duration_couter
