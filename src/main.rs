@@ -1,6 +1,7 @@
 #![deny(deprecated)]
 extern crate tokio;
 use std::io;
+use std::time;
 
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
@@ -72,11 +73,10 @@ impl Classifier {
 /// Database
 use std::collections::HashMap;
 use std::fs::File;
-use std::time::Duration;
 struct TimeSliceDatabase {
     file: File,
     current_category: (),
-    duration_by_category_current_interval: HashMap<String, Duration>,
+    duration_by_category_current_interval: HashMap<String, time::Duration>,
 }
 impl TimeSliceDatabase {
     pub fn new(filename: &str) -> io::Result<Self> {
@@ -101,7 +101,7 @@ impl TimeSliceDatabase {
         println!("Category change: {:?}", category)
     }
 
-    pub fn store(&mut self) {
+    pub fn write_to_disk(&mut self) {
         println!("Write to disk")
     }
 }
@@ -114,6 +114,9 @@ fn get_last_line(file: &mut std::fs::File) -> String {
 }
 
 fn main() {
+    // Timing
+    let db_write_interval = time::Duration::from_secs(10);
+
     // Test classifier
     let mut classifier = Classifier::new();
     classifier.append_filter(&"coding", |md| {
@@ -155,15 +158,14 @@ fn main() {
     }
     {
         // Periodically write database to file
-        use std::time::{Duration, Instant};
-        use tokio::timer::Interval;
         let db = Rc::clone(&db);
-        let interval = Duration::from_secs(10);
-        let task = Interval::new(Instant::now() + interval, interval)
-            .for_each(move |_instant| {
-                db.borrow_mut().store();
-                Ok(())
-            })
+        let task = tokio::timer::Interval::new(
+            time::Instant::now() + db_write_interval,
+            db_write_interval,
+        ).for_each(move |_instant| {
+            db.borrow_mut().write_to_disk();
+            Ok(())
+        })
             .map_err(|err| panic!("Write to file task failed: {}", err));
         runtime.spawn(task);
     }
