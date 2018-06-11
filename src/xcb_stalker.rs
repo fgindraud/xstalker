@@ -48,6 +48,7 @@ fn conn_to_io_error(err: xcb::ConnError) -> io::Error {
     }
 }
 
+// TODO look for changes of property on active window !
 impl Stalker {
     /// Create and configure a new listener.
     fn new() -> io::Result<Self> {
@@ -243,6 +244,7 @@ pub struct ActiveWindowChanges {
 
 impl ActiveWindowChanges {
     /// Create a new stream.
+    /// No tokio reactor is specified, so the Stalker will be registered lazily at first use.
     pub fn new() -> io::Result<Self> {
         Ok(ActiveWindowChanges {
             inner: PollEvented::new(Stalker::new()?),
