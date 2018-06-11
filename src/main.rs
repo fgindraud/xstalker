@@ -106,10 +106,25 @@ impl CategoryDurationCounter {
 
 /// Database
 use std::fs::File;
-struct TimeSliceDatabase {
+
+fn setup_database_for_categories(filename: &str, categories: &Vec<&str>) -> io::Result<()> {
+    use std::fs::OpenOptions;
+    let f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(filename)?;
+    // Check file header
+    let f = io::BufReader::new(f);
+    let s = String::new();
+
+    Ok(())
+}
+
+struct Database {
     file: File,
 }
-impl TimeSliceDatabase {
+impl Database {
     pub fn new(filename: &str) -> io::Result<Self> {
         use std::fs::OpenOptions;
         let file = OpenOptions::new()
@@ -117,7 +132,7 @@ impl TimeSliceDatabase {
             .write(true)
             .create(true)
             .open(filename)?;
-        Ok(TimeSliceDatabase { file: file })
+        Ok(Database { file: file })
     }
 
     pub fn write_to_disk(&mut self) {
@@ -132,11 +147,11 @@ fn get_last_line(file: &mut std::fs::File) -> String {
     String::from("")
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     // Timing
     let db_write_interval = time::Duration::from_secs(10);
 
-    // Test classifier
+    // Setup test classifier
     let mut classifier = Classifier::new();
     classifier.append_filter(&"coding", |md| {
         md.class
@@ -146,15 +161,15 @@ fn main() {
     });
     classifier.append_filter(&"unknown", |_| true);
 
-    // Setup
-    let active_window_changes = ActiveWindowChanges::new().unwrap();
+    // Setup entities
+    let active_window_changes = ActiveWindowChanges::new()?;
 
     let category_duration_couter = CategoryDurationCounter::new(
         &classifier.categories(),
-        classifier.classify(&active_window_changes.get_current_metadata().unwrap()),
+        classifier.classify(&active_window_changes.get_current_metadata()?),
     );
 
-    let db = TimeSliceDatabase::new("test").expect("failed to create database");
+    let db = Database::new("test")?;
 
     // Shared state in Rc<RefCell>: single threaded, needs mutability
     use std::cell::RefCell;
@@ -168,7 +183,7 @@ fn main() {
     // TODO support signals using tokio_signal crate ?
     use tokio::prelude::*;
     use tokio::runtime::current_thread::Runtime;
-    let mut runtime = Runtime::new().expect("unable to create tokio runtime");
+    let mut runtime = Runtime::new()?;
     {
         // React to active window changes
         let category_duration_couter = Rc::clone(&category_duration_couter);
@@ -196,5 +211,5 @@ fn main() {
             .map_err(|err| panic!("Write to file task failed: {}", err));
         runtime.spawn(task);
     }
-    runtime.run().expect("tokio runtime failure")
+    Ok(runtime.run().expect("tokio runtime failure"))
 }
