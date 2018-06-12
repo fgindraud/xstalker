@@ -104,6 +104,48 @@ impl CategoryDurationCounter {
     }
 }
 
+struct BidirectionalFile {
+    file: File,
+    cursor: usize,
+}
+impl BidirectionalFile {
+    fn new(file: File) -> Self {
+        BidirectionalFile {
+            file: file,
+            cursor: 0,
+        }
+    }
+    /// Read forward from cursor, filling buf from the left
+    fn read_forward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::io::Read;
+        self.file.read(buf).map(|n| {
+            let n = n as usize;
+            self.cursor += n;
+            n
+        })
+    }
+    /// Read backward from cursor
+    fn read_backward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        use std::io::{Read, Seek};
+        // Clamp buf size
+        // Seek backward
+        // Read: read_exact to ensure read size !
+        // Seek backward again
+        unimplemented!()
+    }
+    /// Read forward into buffer, resizing it to fit new data
+    fn read_forward_append(&mut self, buf: &mut Vec<u8>, len: usize) -> io::Result<usize> {
+        let prev_len = buf.len();
+        buf.resize(prev_len + len, 0); // Reserve space
+        let result = self.read_forward(buf.split_at_mut(prev_len).1);
+        buf.resize(prev_len + result.unwrap_or(0), 0); // Shrink to what was read
+        result
+    }
+    fn read_backward_prepend(&mut self, buf: &mut Vec<u8>, len: usize) -> io::Result<usize> {
+        unimplemented!()
+    }
+}
+
 /// Database
 
 /// Read database file header, return categories if found
