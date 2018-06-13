@@ -1,6 +1,5 @@
 #![deny(deprecated)]
 extern crate tokio;
-use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -55,18 +54,13 @@ impl Classifier {
 
 /* TODO
  * parsing iso 8601: chrono crate
- * how to split between category_duration_couter and database
- * will probably merge the two
- *
- * replace the HashMap with a name-sorted Vec<(String, time::Duration)>
- * sort_by_key
- * binary_search_by_key
+ * merge database and CategoryDurationCounter
  */
 
 struct CategoryDurationCounter {
     current_category: Option<String>,
     last_category_update: time::Instant,
-    duration_by_category: HashMap<String, time::Duration>,
+    duration_by_category: Vec<(String, time::Duration)>,
 }
 impl CategoryDurationCounter {
     fn new(categories: &Vec<&str>, initial_category: Option<&str>) -> Self {
@@ -85,10 +79,10 @@ impl CategoryDurationCounter {
         println!("Category change: {:?}", category);
         let now = time::Instant::now();
         if let Some(ref current_category) = self.current_category {
-            let mut category_duration = self.duration_by_category
-                .get_mut(current_category.as_str())
+            let index = self.duration_by_category
+                .binary_search_by_key(&current_category, |(category, _duration)| category)
                 .unwrap();
-            *category_duration += now.duration_since(self.last_category_update)
+            self.duration_by_category[index].1 += now.duration_since(self.last_category_update)
         }
         self.current_category = category.map(|s| String::from(s));
         self.last_category_update = now
@@ -150,11 +144,6 @@ impl Database {
             }
             Err(e) => Err(e),
         }
-    }
-
-    /// Get categories
-    pub fn categories(&self) -> &Vec<String> {
-        &self.db_categories
     }
 
     /// Create a new database
