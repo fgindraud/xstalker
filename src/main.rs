@@ -46,35 +46,26 @@ impl Classifier {
         categories
     }
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Option<&str> {
-        for (category, filter) in self.filters.iter() {
-            if filter(metadata) {
-                return Some(&category);
-            }
-        }
-        None
+        self.filters
+            .iter()
+            .find(|(_category, filter)| filter(metadata))
+            .map(|(category, _filter)| category.as_str())
     }
 }
 
-/*
- * File format:
- * date\tcat0\tcat1...
- * [start hour, ISO machin]\t[nb_sec cat0]\t...
+/* TODO
+ * parsing iso 8601: chrono crate
+ * how to split between category_duration_couter and database
+ * will probably merge the two
  *
- * TODO
- * parsing iso 8601: chrono crate TODO
- * two interval streams:
- * - one for write_to_disk,
- * - one for time slice interval
- *
- * At startup, look header.
- * New category: add, rewrite file
- * Removed category: add to set, with 0 (will not be incremented as no filter gives it)
+ * replace the HashMap with a name-sorted Vec<(String, time::Duration)>
+ * sort_by_key
+ * binary_search_by_key
  */
 
 struct CategoryDurationCounter {
     current_category: Option<String>,
     last_category_update: time::Instant,
-    started_recording_at: time::SystemTime,
     duration_by_category: HashMap<String, time::Duration>,
 }
 impl CategoryDurationCounter {
@@ -83,7 +74,6 @@ impl CategoryDurationCounter {
         CategoryDurationCounter {
             current_category: initial_category.map(|s| String::from(s)),
             last_category_update: time::Instant::now(),
-            started_recording_at: time::SystemTime::now(),
             duration_by_category: categories
                 .iter()
                 .map(|&s| (String::from(s), time::Duration::new(0, 0)))
@@ -151,14 +141,8 @@ impl Database {
                         db_categories: db_categories,
                     })
                 } else {
-                    // TODO add categories, possibly reorganizing
-                    Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "category mismatch: expected {:?}, got {:?}",
-                            classifier_categories, &db_categories
-                        ),
-                    ))
+                    // TODO add categories, possibly reorganizing columns
+                    unimplemented!()
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
@@ -166,6 +150,11 @@ impl Database {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Get categories
+    pub fn categories(&self) -> &Vec<String> {
+        &self.db_categories
     }
 
     /// Create a new database
@@ -190,7 +179,7 @@ impl Database {
         })
     }
 
-    /// Parse header line, return categories and line size.
+    /// Parse header line, return categories and header line len.
     fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<(Vec<String>, usize)> {
         use io::{Error, ErrorKind};
         let mut first_line = String::new();
@@ -253,7 +242,6 @@ impl Database {
             offset += prev_line_len;
             prev_line_len = line_len;
         }
-        Ok(offset)
     }
 
     pub fn write_to_disk(&mut self) {
