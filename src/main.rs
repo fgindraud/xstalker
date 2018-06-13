@@ -114,6 +114,27 @@ struct Database {
     //last_line_time: Option< TIME_STUFF >,
 }
 
+fn is_subchain_of<P, S>(pattern: P, searched: S) -> bool
+where
+    P: IntoIterator,
+    S: IntoIterator,
+    <P as IntoIterator>::Item: PartialEq<<S as IntoIterator>::Item>,
+{
+    let mut pattern = pattern.into_iter();
+    let mut searched = searched.into_iter();
+    while let Some(pattern_element) = pattern.next() {
+        loop {
+            match searched.next() {
+                Some(searched_element) => if pattern_element == searched_element {
+                    break;
+                },
+                None => return false,
+            }
+        }
+    }
+    true
+}
+
 impl Database {
     /// Open a database
     pub fn open(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
@@ -121,7 +142,7 @@ impl Database {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
                 let db_categories = Database::parse_categories(&mut reader)?;
-                if &db_categories != classifier_categories {
+                if !is_subchain_of(classifier_categories, &db_categories) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
                         format!(
