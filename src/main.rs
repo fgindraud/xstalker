@@ -5,6 +5,7 @@ use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{Seek, Write};
+use std::path::Path;
 use std::time;
 
 #[derive(Debug)]
@@ -104,79 +105,17 @@ impl CategoryDurationCounter {
     }
 }
 
-struct BidirectionalFile {
-    file: File,
-    cursor: usize,
-}
-impl BidirectionalFile {
-    fn new(file: File) -> Self {
-        BidirectionalFile {
-            file: file,
-            cursor: 0,
-        }
-    }
-    /// Read forward from cursor, filling buf from the left
-    fn read_forward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        use std::io::Read;
-        self.file.read(buf).map(|n| {
-            let n = n as usize;
-            self.cursor += n;
-            n
-        })
-    }
-    /// Read backward from cursor
-    fn read_backward(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        use std::io::{Read, Seek};
-        // Clamp buf size
-        // Seek backward
-        // Read: read_exact to ensure read size !
-        // Seek backward again
-        unimplemented!()
-    }
-    /// Read forward into buffer, resizing it to fit new data
-    fn read_forward_append(&mut self, buf: &mut Vec<u8>, len: usize) -> io::Result<usize> {
-        let prev_len = buf.len();
-        buf.resize(prev_len + len, 0); // Reserve space
-        let result = self.read_forward(buf.split_at_mut(prev_len).1);
-        buf.resize(prev_len + result.unwrap_or(0), 0); // Shrink to what was read
-        result
-    }
-    fn read_backward_prepend(&mut self, buf: &mut Vec<u8>, len: usize) -> io::Result<usize> {
-        unimplemented!()
-    }
-}
-
 /// Database
-
-/// Read database file header, return categories if found
-fn read_current_database_categories(mut file: File) -> io::Result<(File, Option<Vec<String>>)> {
-    use std::io::BufRead;
-    file.seek(io::SeekFrom::Start(0))?;
-    let mut file = io::BufReader::new(file);
-    let mut first_line = String::new();
-    file.read_line(&mut first_line)?;
-    let categories: Vec<String> = first_line
-        .split('\t')
-        .skip(1)
-        .map(|s| String::from(s))
-        .collect();
-    Ok((
-        file.into_inner(),
-        if categories.is_empty() {
-            None
-        } else {
-            Some(categories)
-        },
-    ))
-}
 
 struct Database {
     file: File,
     last_line_start_offset: usize,
+    db_categories: Vec<String>,
+    //last_line_time: Option< TIME_STUFF >,
 }
 impl Database {
-    pub fn new(filename: &str, categories: &Vec<&str>) -> io::Result<Self> {
-        match fs::OpenOptions::new().read(true).write(true).open(filename) {
+    pub fn new(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
+        match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
                 use std::io::BufRead;
                 let mut reader = io::BufReader::new(f);
@@ -185,12 +124,12 @@ impl Database {
                     let mut first_line = String::new();
                     reader.read_line(&mut first_line)?;
                     let db_categories: Vec<&str> = first_line.split('\t').skip(1).collect();
-                    if &db_categories != categories {
+                    if &db_categories != classifier_categories {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
                             format!(
                                 "category mismatch: expected {:?}, got {:?}",
-                                categories, &db_categories
+                                classifier_categories, &db_categories
                             ),
                         ));
                     }
@@ -201,21 +140,31 @@ impl Database {
                 unimplemented!()
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                // Create a new database, print header
-                let mut f = fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .open(filename)?;
-                let header = format!("Time\t{}\n", categories.join("\t"));
-                f.write_all(header.as_bytes())?;
-                Ok(Database {
-                    file: f,
-                    last_line_start_offset: header.len(),
-                })
+                Database::create_new(path, classifier_categories)
             }
             Err(e) => Err(e),
         }
+    }
+
+    fn create_new(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
+        if let Some(dir) = path.parent() {
+            fs::DirBuilder::new().recursive(true).create(dir)?
+        }
+        let mut f = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        let header = format!("time\t{}\n", classifier_categories.join("\t"));
+        f.write_all(header.as_bytes())?;
+        Ok(Database {
+            file: f,
+            last_line_start_offset: header.len(),
+            db_categories: classifier_categories
+                .iter()
+                .map(|&s| String::from(s))
+                .collect(),
+        })
     }
 
     pub fn write_to_disk(&mut self) {
@@ -244,7 +193,7 @@ fn main() -> io::Result<()> {
         let categories = classifier.categories();
 
         // Initial state
-        let db = Database::new("test", &categories)?;
+        let db = Database::new(Path::new("test"), &categories)?;
         let active_window_changes = ActiveWindowChanges::new()?;
         let category_duration_couter = CategoryDurationCounter::new(
             &categories,
