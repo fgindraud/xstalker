@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{Seek, Write};
+use std::io::{BufRead, Read, Seek, Write};
 use std::path::Path;
 use std::time;
 
@@ -113,26 +113,22 @@ struct Database {
     db_categories: Vec<String>,
     //last_line_time: Option< TIME_STUFF >,
 }
+
 impl Database {
-    pub fn new(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
+    /// Open a database
+    pub fn open(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
-                use std::io::BufRead;
                 let mut reader = io::BufReader::new(f);
-                {
-                    // Check categories
-                    let mut first_line = String::new();
-                    reader.read_line(&mut first_line)?;
-                    let db_categories: Vec<&str> = first_line.split('\t').skip(1).collect();
-                    if &db_categories != classifier_categories {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!(
-                                "category mismatch: expected {:?}, got {:?}",
-                                classifier_categories, &db_categories
-                            ),
-                        ));
-                    }
+                let db_categories = Database::parse_categories(&mut reader)?;
+                if &db_categories != classifier_categories {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "category mismatch: expected {:?}, got {:?}",
+                            classifier_categories, &db_categories
+                        ),
+                    ));
                 }
                 // TODO Seek to start of last line
                 // TODO make an abstraction for reading / writing while maintaining cached info of
@@ -146,7 +142,8 @@ impl Database {
         }
     }
 
-    fn create_new(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
+    /// Create a new database
+    pub fn create_new(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
         }
@@ -165,6 +162,35 @@ impl Database {
                 .map(|&s| String::from(s))
                 .collect(),
         })
+    }
+
+    fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<Vec<String>> {
+        use io::{Error, ErrorKind};
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line)?;
+        // Line must exist, must be '\n'-terminated, must contain at least 'time' header.
+        if first_line.is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "database has no header line",
+            ));
+        }
+        if !first_line.ends_with('\n') {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "database header line is not newline terminated",
+            ));
+        }
+        let (line, _) = first_line.split_at(first_line.len() - 2);
+        let mut elements = line.split('\t');
+        if let Some(_time_header) = elements.next() {
+            Ok(elements.map(|s| String::from(s)).collect())
+        } else {
+            Err(Error::new(
+                ErrorKind::InvalidData,
+                "database header has no field",
+            ))
+        }
     }
 
     pub fn write_to_disk(&mut self) {
@@ -193,7 +219,7 @@ fn main() -> io::Result<()> {
         let categories = classifier.categories();
 
         // Initial state
-        let db = Database::new(Path::new("test"), &categories)?;
+        let db = Database::open(Path::new("test"), &categories)?;
         let active_window_changes = ActiveWindowChanges::new()?;
         let category_duration_couter = CategoryDurationCounter::new(
             &categories,
