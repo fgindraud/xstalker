@@ -1,10 +1,12 @@
 #![deny(deprecated)]
 extern crate tokio;
+use std::cell::RefCell;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::Path;
+use std::rc::Rc;
 use std::time;
 
 #[derive(Debug)]
@@ -54,23 +56,27 @@ impl Classifier {
 
 /* TODO
  * parsing iso 8601: chrono crate
- * merge database and CategoryDurationCounter
  */
 
 struct CategoryDurationCounter {
-    current_category: Option<String>,
+    current_category: Option<String>, // Index in duration_by_category
     last_category_update: time::Instant,
     duration_by_category: Vec<(String, time::Duration)>,
 }
 impl CategoryDurationCounter {
-    fn new(categories: &Vec<&str>, initial_category: Option<&str>) -> Self {
-        println!("Initial category: {:?}", initial_category);
+    /// Create a new time tracking structure.
+    /// Starts with no defined category.
+    fn new<C>(categories: C) -> Self
+    where
+        C: IntoIterator,
+        <C as IntoIterator>::Item: Into<String>,
+    {
         CategoryDurationCounter {
-            current_category: initial_category.map(|s| String::from(s)),
+            current_category: None,
             last_category_update: time::Instant::now(),
             duration_by_category: categories
-                .iter()
-                .map(|&s| (String::from(s), time::Duration::new(0, 0)))
+                .into_iter()
+                .map(|s| (s.into(), time::Duration::new(0, 0)))
                 .collect(),
         }
     }
@@ -80,13 +86,24 @@ impl CategoryDurationCounter {
         let now = time::Instant::now();
         if let Some(ref current_category) = self.current_category {
             let index = self.duration_by_category
-                .binary_search_by_key(&current_category, |(category, _duration)| category)
-                .unwrap();
-            self.duration_by_category[index].1 += now.duration_since(self.last_category_update)
+                .binary_search_by_key(&current_category, |(category, _duration)| category);
+            println!("Index: {:?} in {:?}", index, self.duration_by_category);
+            self.duration_by_category[index.unwrap()].1 +=
+                now.duration_since(self.last_category_update)
         }
         self.current_category = category.map(|s| String::from(s));
         self.last_category_update = now
     }
+}
+
+fn is_unique_and_sorted<T>(sequence: &Vec<T>) -> bool
+where
+    T: Clone + Ord,
+{
+    let mut clone = sequence.clone();
+    clone.sort();
+    clone.dedup();
+    &clone == sequence
 }
 
 fn is_subchain_of<P, S>(pattern: P, searched: S) -> bool
@@ -114,25 +131,25 @@ where
 struct Database {
     file: File,
     last_line_start_offset: usize,
-    db_categories: Vec<String>,
-    //last_line_time: Option< TIME_STUFF >,
+    duration_counter: CategoryDurationCounter,
+    //last_line_time: Option< TIME_STUFF >
 }
 
 impl Database {
     /// Open a database
-    pub fn open(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
+    pub fn open(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
                 let (db_categories, header_len) = Database::parse_categories(&mut reader)?;
-                if is_subchain_of(classifier_categories, &db_categories) {
+                if is_subchain_of(&classifier_categories, &db_categories) {
                     let last_line_start_offset =
                         Database::scan_db_entries(&mut reader, header_len, db_categories.len())?;
                     // TODO seek to last line, and read it to get time
                     Ok(Database {
                         file: reader.into_inner(),
                         last_line_start_offset: last_line_start_offset,
-                        db_categories: db_categories,
+                        duration_counter: CategoryDurationCounter::new(db_categories),
                     })
                 } else {
                     // TODO add categories, possibly reorganizing columns
@@ -147,7 +164,7 @@ impl Database {
     }
 
     /// Create a new database
-    pub fn create_new(path: &Path, classifier_categories: &Vec<&str>) -> io::Result<Self> {
+    pub fn create_new(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
         }
@@ -161,10 +178,7 @@ impl Database {
         Ok(Database {
             file: f,
             last_line_start_offset: header.len(),
-            db_categories: classifier_categories
-                .iter()
-                .map(|&s| String::from(s))
-                .collect(),
+            duration_counter: CategoryDurationCounter::new(classifier_categories),
         })
     }
 
@@ -188,7 +202,15 @@ impl Database {
         }
         let mut elements = first_line.split('\t');
         if let Some(_time_header) = elements.next() {
-            Ok((elements.map(|s| String::from(s)).collect(), header_len))
+            let categories = elements.map(|s| s.into()).collect();
+            if is_unique_and_sorted(&categories) {
+                Ok((categories, header_len))
+            } else {
+                Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "database categories are unsorted or not unique",
+                ))
+            }
         } else {
             Err(Error::new(
                 ErrorKind::InvalidData,
@@ -252,29 +274,12 @@ fn main() -> io::Result<()> {
     });
     classifier.append_filter(&"unknown", |_| true);
 
-    // Setup entities
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    let (db, active_window_changes, category_duration_couter) = {
-        let categories = classifier.categories();
+    // Create db
+    let db = Database::open(Path::new("test"), classifier.categories())?;
 
-        // Initial state
-        let db = Database::open(Path::new("test"), &categories)?;
-        let active_window_changes = ActiveWindowChanges::new()?;
-        let category_duration_couter = CategoryDurationCounter::new(
-            &categories,
-            classifier.classify(&active_window_changes.get_current_metadata()?),
-        );
-
-        // Wrap in Rc for shared ownership when passed to tokio.
-        // Rc = single thread, RefCell for mutability when needed.
-        (
-            Rc::new(RefCell::new(db)),
-            active_window_changes,
-            Rc::new(RefCell::new(category_duration_couter)),
-        )
-    };
-    let classifier = Rc::new(classifier);
+    // Database is shared between tasks in tokio.
+    // Rc = single thread, RefCell for mutability when needed.
+    let db = Rc::new(RefCell::new(db));
 
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
@@ -283,14 +288,19 @@ fn main() -> io::Result<()> {
     use tokio::runtime::current_thread::Runtime;
     let mut runtime = Runtime::new()?;
     {
-        let category_duration_couter = Rc::clone(&category_duration_couter);
-        let classifier = Rc::clone(&classifier);
+        let db = Rc::clone(&db);
+        // Create listener and get initial windowing state
+        let active_window_changes = ActiveWindowChanges::new()?;
+        {
+            let metadata = active_window_changes.get_current_metadata()?;
+            let category = classifier.classify(&metadata);
+            db.borrow_mut().duration_counter.category_changed(category);
+        }
         // React to active window changes
         let task = active_window_changes
             .for_each(move |active_window| {
-                category_duration_couter
-                    .borrow_mut()
-                    .category_changed(classifier.classify(&active_window));
+                let category = classifier.classify(&active_window);
+                db.borrow_mut().duration_counter.category_changed(category);
                 Ok(())
             })
             .map_err(|err| panic!("ActiveWindowChanges listener failed: {}", err));
