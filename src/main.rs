@@ -46,7 +46,7 @@ impl Classifier {
         self.filters
             .push((String::from(category), Box::new(filter)));
     }
-    /// Return the list of all defined categories, sorted and unique.
+    /// Return the list of all defined categories, unique.
     fn categories(&self) -> Vec<&str> {
         let mut categories: Vec<&str> = self.filters
             .iter()
@@ -74,6 +74,7 @@ struct CategoryDurationCounter {
     last_category_update: time::Instant,
     duration_by_category: Vec<(String, time::Duration)>,
 }
+
 impl CategoryDurationCounter {
     /// Create a new time tracking structure.
     /// Starts with no defined category.
@@ -100,43 +101,42 @@ impl CategoryDurationCounter {
         }
         self.current_category_index = category.map(|ref s| {
             self.duration_by_category
-                .binary_search_by_key(s, |(category_name, _duration)| category_name.as_str())
+                .iter()
+                .enumerate()
+                .find(|(i, (category_name, _duration))| category_name == s)
                 .unwrap()
+                .0
         });
         self.last_category_update = now
     }
 }
 
-fn is_unique_and_sorted<T>(sequence: &[T]) -> bool
+fn bad_data<E>(error: E) -> io::Error
 where
-    T: Ord,
+    E: Into<Box<std::error::Error + Send + Sync>>,
 {
-    // Compare sequence to a sorted+uniqued vec of references to sequence elements
-    let mut clone: Vec<&T> = sequence.iter().collect();
-    clone.sort();
-    clone.dedup();
-    clone.into_iter().eq(sequence.iter())
+    io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
-fn is_subchain_of<P, S>(pattern: P, searched: S) -> bool
+fn has_unique_elements<T>(sequence: &[T]) -> bool
 where
-    P: IntoIterator,
-    S: IntoIterator,
-    <P as IntoIterator>::Item: PartialEq<<S as IntoIterator>::Item>,
+    T: PartialEq<T>,
 {
-    let mut pattern = pattern.into_iter();
-    let mut searched = searched.into_iter();
-    while let Some(pattern_element) = pattern.next() {
-        loop {
-            match searched.next() {
-                Some(searched_element) => if pattern_element == searched_element {
-                    break;
-                },
-                None => return false,
-            }
-        }
-    }
-    true
+    sequence.into_iter().all(|tested_element| {
+        sequence
+            .into_iter()
+            .filter(|element| *element == tested_element)
+            .count() == 1
+    })
+}
+
+fn is_subset_of<A, B>(subset: &[A], superset: &[B]) -> bool
+where
+    A: PartialEq<B>,
+{
+    subset
+        .into_iter()
+        .all(|a_element| superset.into_iter().any(|b_element| a_element == b_element))
 }
 
 fn elapsed_is_less_than(
@@ -147,17 +147,9 @@ fn elapsed_is_less_than(
     *old + chrono::Duration::from_std(duration).unwrap() > *new
 }
 
-fn bad_data<E>(error: E) -> io::Error
-where
-    E: Into<Box<std::error::Error + Send + Sync>>,
-{
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
 /** Database.
  * TODO document format
  * Time spent is stored in seconds.
- * TODO allow unsorted categories
  */
 struct Database {
     file: File,
@@ -178,7 +170,7 @@ impl Database {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
                 let (db_categories, header_len) = Database::parse_categories(&mut reader)?;
-                if is_subchain_of(&classifier_categories, &db_categories) {
+                if is_subset_of(&classifier_categories, &db_categories) {
                     let last_line_start_offset =
                         Database::scan_db_entries(&mut reader, header_len, db_categories.len())?;
                     let mut f = reader.into_inner();
@@ -211,7 +203,7 @@ impl Database {
                     };
                     Ok(new_db)
                 } else {
-                    // TODO add categories, possibly reorganizing columns
+                    // TODO add categories at the end, rewrite db with 0s in new categories
                     unimplemented!()
                 }
             }
@@ -261,10 +253,10 @@ impl Database {
         let mut elements = header.split('\t');
         if let Some(_time_header) = elements.next() {
             let categories: Vec<String> = elements.map(|s| s.into()).collect();
-            if is_unique_and_sorted(&categories) {
+            if has_unique_elements(&categories) {
                 Ok((categories, header_len))
             } else {
-                Err(bad_data("database categories must be sorted and unique"))
+                Err(bad_data("database categories must be unique"))
             }
         } else {
             Err(bad_data("database header has no field"))
