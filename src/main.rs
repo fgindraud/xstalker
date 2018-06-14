@@ -65,6 +65,7 @@ impl Classifier {
     }
 }
 
+// Shorter io::Error creation
 fn bad_data<E>(error: E) -> io::Error
 where
     E: Into<Box<std::error::Error + Send + Sync>>,
@@ -91,14 +92,6 @@ where
     subset
         .into_iter()
         .all(|a_element| superset.into_iter().any(|b_element| a_element == b_element))
-}
-
-fn elapsed_is_less_than(
-    new: &chrono::DateTime<chrono::Local>,
-    old: &chrono::DateTime<chrono::Local>,
-    duration: time::Duration,
-) -> bool {
-    *old + chrono::Duration::from_std(duration).unwrap() > *new
 }
 
 /** Database.
@@ -321,6 +314,9 @@ impl CategoryDurationCounter {
 }
 
 fn main() -> io::Result<()> {
+    // TODO wrap in function that takes config, and return io::Result<()>
+    // main should parse args and print errors
+
     // Config
     let time_slice_interval = time::Duration::from_secs(3600);
     let db_write_interval = time::Duration::from_secs(10);
@@ -339,11 +335,31 @@ fn main() -> io::Result<()> {
     let mut db = Database::open(Path::new("test"), classifier.categories())?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories());
 
+    // Determine boundary of time slices
+    let now = chrono::Local::now();
+
     if let Some((time, durations)) = db.get_last_entry()? {
-        duration_counter.set_durations(&durations);
-        // TODO check time difference
-        // if small enough, define start of next time slice as time + interval
-        // if not, define it as now + interval
+        if now < time {
+            // Probably a timezone change, stop
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Database time is in the future",
+            ));
+        } else if time <= now
+            && now < time + chrono::Duration::from_std(time_slice_interval).unwrap()
+        {
+            // We are still in the time slice of the last entry.
+            // "resume" the duration_counter
+            // do not freeze last entry
+            duration_counter.set_durations(&durations);
+        } else {
+            // New time slice, starting now
+            // freeze the last entry
+        }
+    } else {
+        // No last entry.
+        // Time slice starts now.
+        // No need to freeze the last entry (doesn't exist).
     }
 
     // State is shared between tasks in tokio.
