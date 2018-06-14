@@ -59,7 +59,7 @@ impl Classifier {
  */
 
 struct CategoryDurationCounter {
-    current_category: Option<String>, // Index in duration_by_category
+    current_category_index: Option<usize>, // Index in duration_by_category
     last_category_update: time::Instant,
     duration_by_category: Vec<(String, time::Duration)>,
 }
@@ -72,7 +72,7 @@ impl CategoryDurationCounter {
         <C as IntoIterator>::Item: Into<String>,
     {
         CategoryDurationCounter {
-            current_category: None,
+            current_category_index: None,
             last_category_update: time::Instant::now(),
             duration_by_category: categories
                 .into_iter()
@@ -84,26 +84,27 @@ impl CategoryDurationCounter {
     fn category_changed(&mut self, category: Option<&str>) {
         println!("Category change: {:?}", category);
         let now = time::Instant::now();
-        if let Some(ref current_category) = self.current_category {
-            let index = self.duration_by_category
-                .binary_search_by_key(&current_category, |(category, _duration)| category);
-            println!("Index: {:?} in {:?}", index, self.duration_by_category);
-            self.duration_by_category[index.unwrap()].1 +=
-                now.duration_since(self.last_category_update)
+        if let Some(index) = self.current_category_index {
+            self.duration_by_category[index].1 += now.duration_since(self.last_category_update)
         }
-        self.current_category = category.map(|s| String::from(s));
+        self.current_category_index = category.map(|ref s| {
+            self.duration_by_category
+                .binary_search_by_key(s, |(category_name, _duration)| category_name.as_str())
+                .unwrap()
+        });
         self.last_category_update = now
     }
 }
 
-fn is_unique_and_sorted<T>(sequence: &Vec<T>) -> bool
+fn is_unique_and_sorted<T>(sequence: &[T]) -> bool
 where
-    T: Clone + Ord,
+    T: Ord,
 {
-    let mut clone = sequence.clone();
+    // Compare sequence to a sorted+uniqued vec of references to sequence elements
+    let mut clone: Vec<&T> = sequence.iter().collect();
     clone.sort();
     clone.dedup();
-    &clone == sequence
+    clone.into_iter().eq(sequence.iter())
 }
 
 fn is_subchain_of<P, S>(pattern: P, searched: S) -> bool
@@ -202,13 +203,13 @@ impl Database {
         }
         let mut elements = first_line.split('\t');
         if let Some(_time_header) = elements.next() {
-            let categories = elements.map(|s| s.into()).collect();
+            let categories: Vec<String> = elements.map(|s| s.into()).collect();
             if is_unique_and_sorted(&categories) {
                 Ok((categories, header_len))
             } else {
                 Err(Error::new(
                     ErrorKind::InvalidData,
-                    "database categories are unsorted or not unique",
+                    "database categories must be sorted and unique",
                 ))
             }
         } else {
