@@ -1,4 +1,5 @@
 #![deny(deprecated)]
+extern crate chrono;
 extern crate tokio;
 use std::cell::RefCell;
 use std::fs;
@@ -7,7 +8,9 @@ use std::io;
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::Path;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::time;
+use tokio::prelude::*;
 
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
@@ -19,17 +22,23 @@ pub struct ActiveWindowMetadata {
 mod xcb_stalker;
 use xcb_stalker::ActiveWindowChanges;
 
-/// Classifier: stores filters used to determine category of time slice
+/** Classifier: stores rules used to determine categories for time spent.
+ * Rules are stored in an ordered list.
+ * The first matching rule in the list chooses the category.
+ * A category can appear in multiple rules.
+ */
 struct Classifier {
     filters: Vec<(String, Box<Fn(&ActiveWindowMetadata) -> bool>)>,
 }
 
 impl Classifier {
+    /// Create a new classifier with no rules.
     fn new() -> Self {
         Classifier {
             filters: Vec::new(),
         }
     }
+    /// Add a rule at the end of the list, for the given category.
     fn append_filter<F>(&mut self, category: &str, filter: F)
     where
         F: 'static + Fn(&ActiveWindowMetadata) -> bool,
@@ -37,6 +46,7 @@ impl Classifier {
         self.filters
             .push((String::from(category), Box::new(filter)));
     }
+    /// Return the list of all defined categories, sorted and unique.
     fn categories(&self) -> Vec<&str> {
         let mut categories: Vec<&str> = self.filters
             .iter()
@@ -46,6 +56,7 @@ impl Classifier {
         categories.dedup();
         categories
     }
+    /// Determine the category for the given window metadata.
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Option<&str> {
         self.filters
             .iter()
@@ -128,17 +139,35 @@ where
     true
 }
 
-/// Database
+fn elapsed_is_less_than(
+    new: &chrono::DateTime<chrono::Local>,
+    old: &chrono::DateTime<chrono::Local>,
+    duration: time::Duration,
+) -> bool {
+    *old + chrono::Duration::from_std(duration).unwrap() > *new
+}
+
+/** Database.
+ * TODO document format
+ * Time spent is stored in seconds.
+ * TODO allow unsorted categories
+ * TODO invalid_data_error to shorten stuff
+ */
 struct Database {
     file: File,
     last_line_start_offset: usize,
     duration_counter: CategoryDurationCounter,
-    //last_line_time: Option< TIME_STUFF >
+    time_slice_interval: time::Duration,
+    current_time_slice_start: chrono::DateTime<chrono::Local>,
 }
 
 impl Database {
     /// Open a database
-    pub fn open(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
+    pub fn open(
+        path: &Path,
+        classifier_categories: Vec<&str>,
+        time_slice_interval: time::Duration,
+    ) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
@@ -146,26 +175,53 @@ impl Database {
                 if is_subchain_of(&classifier_categories, &db_categories) {
                     let last_line_start_offset =
                         Database::scan_db_entries(&mut reader, header_len, db_categories.len())?;
-                    // TODO seek to last line, and read it to get time
-                    Ok(Database {
-                        file: reader.into_inner(),
-                        last_line_start_offset: last_line_start_offset,
-                        duration_counter: CategoryDurationCounter::new(db_categories),
-                    })
+                    let mut f = reader.into_inner();
+
+                    let now = chrono::Local::now();
+                    let last_line_content = Database::parse_last_line(
+                        &mut f,
+                        last_line_start_offset,
+                        db_categories.len(),
+                    )?;
+                    let new_db = match last_line_content {
+                        Some((last_line_time, ref duration_by_category))
+                            if elapsed_is_less_than(&now, &last_line_time, time_slice_interval) =>
+                        {
+                            Database {
+                                file: f,
+                                last_line_start_offset: last_line_start_offset,
+                                duration_counter: CategoryDurationCounter::new(db_categories), // TODO setup values
+                                time_slice_interval: time_slice_interval,
+                                current_time_slice_start: last_line_time,
+                            }
+                        }
+                        _ => Database {
+                            file: f,
+                            last_line_start_offset: last_line_start_offset,
+                            duration_counter: CategoryDurationCounter::new(db_categories),
+                            time_slice_interval: time_slice_interval,
+                            current_time_slice_start: now,
+                        },
+                    };
+                    Ok(new_db)
                 } else {
                     // TODO add categories, possibly reorganizing columns
                     unimplemented!()
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                Database::create_new(path, classifier_categories)
+                Database::create_new(path, classifier_categories, time_slice_interval)
             }
             Err(e) => Err(e),
         }
     }
 
     /// Create a new database
-    pub fn create_new(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
+    pub fn create_new(
+        path: &Path,
+        classifier_categories: Vec<&str>,
+        time_slice_interval: time::Duration,
+    ) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
         }
@@ -174,20 +230,22 @@ impl Database {
             .write(true)
             .create_new(true)
             .open(path)?;
-        let header = format!("time\t{}\n", classifier_categories.join("\t"));
+        let header = format!("time_slice\t{}\n", classifier_categories.join("\t"));
         f.write_all(header.as_bytes())?;
         Ok(Database {
             file: f,
             last_line_start_offset: header.len(),
             duration_counter: CategoryDurationCounter::new(classifier_categories),
+            time_slice_interval: time_slice_interval,
+            current_time_slice_start: chrono::Local::now(),
         })
     }
 
     /// Parse header line, return categories and header line len.
     fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<(Vec<String>, usize)> {
         use io::{Error, ErrorKind};
-        let mut first_line = String::new();
-        let header_len = reader.read_line(&mut first_line)?;
+        let mut header = String::new();
+        let header_len = reader.read_line(&mut header)?;
         // Line must exist, must be '\n'-terminated, must contain at least 'time' header.
         if header_len == 0 {
             return Err(Error::new(
@@ -195,13 +253,13 @@ impl Database {
                 "database has no header line",
             ));
         }
-        if first_line.pop() != Some('\n') {
+        if header.pop() != Some('\n') {
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 "database header line is not newline terminated",
             ));
         }
-        let mut elements = first_line.split('\t');
+        let mut elements = header.split('\t');
         if let Some(_time_header) = elements.next() {
             let categories: Vec<String> = elements.map(|s| s.into()).collect();
             if is_unique_and_sorted(&categories) {
@@ -256,6 +314,68 @@ impl Database {
         }
     }
 
+    /// Parse the last entry of the database file.
+    /// If entry is correct: return time slice start and duration for categories.
+    /// If entry is empty: return None.
+    /// If entry is incorrect: error.
+    fn parse_last_line(
+        file: &mut File,
+        last_line_start_offset: usize,
+        nb_categories: usize,
+    ) -> io::Result<Option<(chrono::DateTime<chrono::Local>, Vec<time::Duration>)>> {
+        use io::{Error, ErrorKind};
+        file.seek(io::SeekFrom::Start(last_line_start_offset as u64))?;
+        let mut line = String::new();
+        let line_len = file.read_to_string(&mut line)?;
+        if line_len == 0 {
+            // Empty database is ok.
+            return Ok(None);
+        }
+        // If line exists, it must be '\n'-terminated, must contain time + categories durations
+        if line.pop() != Some('\n') {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "database last line is not newline terminated",
+            ));
+        }
+        let mut elements = line.split('\t');
+        if let Some(time_slice_text) = elements.next() {
+            // Read entry time field
+            let time_slice = chrono::DateTime::from_str(time_slice_text).map_err(|err| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!("database: cannot parse last line time: {}", err),
+                )
+            })?;
+            // Read durations of entry
+            let mut duration_by_category = Vec::with_capacity(nb_categories);
+            for s in elements {
+                let seconds = u64::from_str(s).map_err(|err| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        format!(
+                            "database: cannot parse last line category duration: {}",
+                            err
+                        ),
+                    )
+                })?;
+                duration_by_category.push(time::Duration::from_secs(seconds))
+            }
+            if duration_by_category.len() != nb_categories {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "database last line: field count mismatch",
+                ));
+            }
+            Ok(Some((time_slice, duration_by_category)))
+        } else {
+            Err(Error::new(
+                ErrorKind::InvalidData,
+                "database header has no field",
+            ))
+        }
+    }
+
     pub fn write_to_disk(&mut self) {
         println!("Write to disk")
     }
@@ -263,6 +383,7 @@ impl Database {
 
 fn main() -> io::Result<()> {
     // Timing
+    let time_slice_interval = time::Duration::from_secs(3600);
     let db_write_interval = time::Duration::from_secs(10);
 
     // Setup test classifier
@@ -276,7 +397,11 @@ fn main() -> io::Result<()> {
     classifier.append_filter(&"unknown", |_| true);
 
     // Create db
-    let db = Database::open(Path::new("test"), classifier.categories())?;
+    let db = Database::open(
+        Path::new("test"),
+        classifier.categories(),
+        time_slice_interval,
+    )?;
 
     // Database is shared between tasks in tokio.
     // Rc = single thread, RefCell for mutability when needed.
@@ -285,9 +410,7 @@ fn main() -> io::Result<()> {
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
-    use tokio::prelude::*;
-    use tokio::runtime::current_thread::Runtime;
-    let mut runtime = Runtime::new()?;
+    let mut runtime = tokio::runtime::current_thread::Runtime::new()?;
     {
         let db = Rc::clone(&db);
         // Create listener and get initial windowing state
