@@ -147,11 +147,17 @@ fn elapsed_is_less_than(
     *old + chrono::Duration::from_std(duration).unwrap() > *new
 }
 
+fn bad_data<E>(error: E) -> io::Error
+where
+    E: Into<Box<std::error::Error + Send + Sync>>,
+{
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
 /** Database.
  * TODO document format
  * Time spent is stored in seconds.
  * TODO allow unsorted categories
- * TODO invalid_data_error to shorten stuff
  */
 struct Database {
     file: File,
@@ -243,21 +249,14 @@ impl Database {
 
     /// Parse header line, return categories and header line len.
     fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<(Vec<String>, usize)> {
-        use io::{Error, ErrorKind};
         let mut header = String::new();
         let header_len = reader.read_line(&mut header)?;
         // Line must exist, must be '\n'-terminated, must contain at least 'time' header.
         if header_len == 0 {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "database has no header line",
-            ));
+            return Err(bad_data("database has no header line"));
         }
         if header.pop() != Some('\n') {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "database header line is not newline terminated",
-            ));
+            return Err(bad_data("database header line is not newline terminated"));
         }
         let mut elements = header.split('\t');
         if let Some(_time_header) = elements.next() {
@@ -265,16 +264,10 @@ impl Database {
             if is_unique_and_sorted(&categories) {
                 Ok((categories, header_len))
             } else {
-                Err(Error::new(
-                    ErrorKind::InvalidData,
-                    "database categories must be sorted and unique",
-                ))
+                Err(bad_data("database categories must be sorted and unique"))
             }
         } else {
-            Err(Error::new(
-                ErrorKind::InvalidData,
-                "database header has no field",
-            ))
+            Err(bad_data("database header has no field"))
         }
     }
 
@@ -285,7 +278,6 @@ impl Database {
         header_len: usize,
         nb_categories: usize,
     ) -> io::Result<usize> {
-        use io::{Error, ErrorKind};
         let mut line = String::new();
         let mut line_nb = 2; // Start at line 2
         let mut offset = header_len;
@@ -297,16 +289,16 @@ impl Database {
                 return Ok(offset);
             }
             if line.pop() != Some('\n') {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    format!("database entry at line {}: not newline terminated", line_nb),
-                ));
+                return Err(bad_data(format!(
+                    "database entry at line {}: not newline terminated",
+                    line_nb
+                )));
             }
             if line.split('\t').count() != nb_categories + 1 {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    format!("database entry at line {}: field count mismatch", line_nb),
-                ));
+                return Err(bad_data(format!(
+                    "database entry at line {}: field count mismatch",
+                    line_nb
+                )));
             }
             line_nb += 1;
             offset += prev_line_len;
@@ -323,7 +315,6 @@ impl Database {
         last_line_start_offset: usize,
         nb_categories: usize,
     ) -> io::Result<Option<(chrono::DateTime<chrono::Local>, Vec<time::Duration>)>> {
-        use io::{Error, ErrorKind};
         file.seek(io::SeekFrom::Start(last_line_start_offset as u64))?;
         let mut line = String::new();
         let line_len = file.read_to_string(&mut line)?;
@@ -333,46 +324,31 @@ impl Database {
         }
         // If line exists, it must be '\n'-terminated, must contain time + categories durations
         if line.pop() != Some('\n') {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "database last line is not newline terminated",
-            ));
+            return Err(bad_data("database last line is not newline terminated"));
         }
         let mut elements = line.split('\t');
         if let Some(time_slice_text) = elements.next() {
             // Read entry time field
             let time_slice = chrono::DateTime::from_str(time_slice_text).map_err(|err| {
-                Error::new(
-                    ErrorKind::InvalidData,
-                    format!("database: cannot parse last line time: {}", err),
-                )
+                bad_data(format!("database: cannot parse last line time: {}", err))
             })?;
             // Read durations of entry
             let mut duration_by_category = Vec::with_capacity(nb_categories);
             for s in elements {
                 let seconds = u64::from_str(s).map_err(|err| {
-                    Error::new(
-                        ErrorKind::InvalidData,
-                        format!(
-                            "database: cannot parse last line category duration: {}",
-                            err
-                        ),
-                    )
+                    bad_data(format!(
+                        "database: cannot parse last line category duration: {}",
+                        err
+                    ))
                 })?;
                 duration_by_category.push(time::Duration::from_secs(seconds))
             }
             if duration_by_category.len() != nb_categories {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    "database last line: field count mismatch",
-                ));
+                return Err(bad_data("database last line: field count mismatch"));
             }
             Ok(Some((time_slice, duration_by_category)))
         } else {
-            Err(Error::new(
-                ErrorKind::InvalidData,
-                "database header has no field",
-            ))
+            Err(bad_data("database header has no field"))
         }
     }
 
