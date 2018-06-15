@@ -100,10 +100,10 @@ fn run_daemon(
     // Setup state
     let mut db = Database::open(db_file, classifier.categories())?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories());
+    let active_window_changes = ActiveWindowChanges::new()?;
 
-    // Determine boundary of time windows
+    // Determine current time window
     let now = DatabaseTime::from(time::SystemTime::now());
-
     let window_start = {
         if let Some((time, durations)) = db.get_last_entry()? {
             if time <= now && now < time + chrono::Duration::from_std(time_window_size).unwrap() {
@@ -124,35 +124,27 @@ fn run_daemon(
     let duration_to_next_window_change = time_window_size
         - chrono::Duration::to_std(&now.signed_duration_since(window_start)).unwrap();
 
+    // Set initial category
+    duration_counter
+        .category_changed(classifier.classify(&active_window_changes.get_current_metadata()?));
+
+    // Wrap shared state in RefCell: cannot prove with type that mutations are exclusive.
     let db = RefCell::new(db);
     let duration_counter = RefCell::new(duration_counter);
     let window_start = RefCell::new(window_start);
 
-    // Create a tokio runtime to implement an event loop.
-    // Single threaded is enough.
-    // TODO support signals using tokio_signal crate ?
-    let all_category_changes = {
-        // Listen to active window changes.
-        // On each window change, update the duration_counter
-        let active_window_changes = ActiveWindowChanges::new()?;
-        // Get initial category
-        {
-            let metadata = active_window_changes.get_current_metadata()?;
-            let category = classifier.classify(&metadata);
+    // Listen to active window changes.
+    let all_category_changes = active_window_changes
+        .for_each(|active_window| {
+            println!("task_handle_window_change");
+            let category = classifier.classify(&active_window);
             duration_counter.borrow_mut().category_changed(category);
-        }
-        // Asynchronous stream of reactions to changes
-        active_window_changes
-            .for_each(|active_window| {
-                println!("task_handle_window_change");
-                let category = classifier.classify(&active_window);
-                duration_counter.borrow_mut().category_changed(category);
-                Ok(())
-            })
-            .map_err(|err| panic!("ActiveWindowChanges listener failed:\n{}", err))
-    };
-    let all_db_writes = {
-        // Periodically write database to file
+            Ok(())
+        })
+        .map_err(|err| panic!("ActiveWindowChanges listener failed:\n{}", err));
+
+    // Periodically write database to file
+    let all_db_writes =
         tokio::timer::Interval::new(time::Instant::now() + db_write_interval, db_write_interval)
             .for_each(|_instant| {
                 println!("task_write_db");
@@ -163,26 +155,27 @@ fn run_daemon(
                 ).unwrap();
                 Ok(())
             })
-            .map_err(|err| panic!("Write to database file failed:\n{}", err))
-    };
-    let all_time_window_changes = {
-        // Periodically change time window
-        tokio::timer::Interval::new(
-            time::Instant::now() + duration_to_next_window_change,
-            time_window_size,
-        ).for_each(|_instant| {
-            println!("task_new_time_window");
-            change_time_window(
-                &mut db.borrow_mut(),
-                &mut duration_counter.borrow_mut(),
-                &mut window_start.borrow_mut(),
-                time_window_size,
-            ).unwrap();
-            Ok(())
-        })
-            .map_err(|err| panic!("Change time window failed:\n{}", err))
-    };
+            .map_err(|err| panic!("Write to database file failed:\n{}", err));
 
+    // Periodically change time window
+    let all_time_window_changes = tokio::timer::Interval::new(
+        time::Instant::now() + duration_to_next_window_change,
+        time_window_size,
+    ).for_each(|_instant| {
+        println!("task_new_time_window");
+        change_time_window(
+            &mut db.borrow_mut(),
+            &mut duration_counter.borrow_mut(),
+            &mut window_start.borrow_mut(),
+            time_window_size,
+        ).unwrap();
+        Ok(())
+    })
+        .map_err(|err| panic!("Change time window failed:\n{}", err));
+
+    // Create a tokio runtime to implement an event loop.
+    // Single threaded is enough.
+    // TODO support signals using tokio_signal crate ?
     let mut runtime = tokio::runtime::current_thread::Runtime::new()?;
     runtime
         .block_on(all_category_changes.join3(all_db_writes, all_time_window_changes))
