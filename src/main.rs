@@ -63,6 +63,7 @@ impl Classifier {
             .find(|(_category, filter)| filter(metadata))
             .map(|(category, _filter)| category.as_str())
     }
+    // TODO read rules from simple language ?
 }
 
 // Shorter io::Error creation
@@ -95,9 +96,14 @@ where
 }
 
 /** Time spent Database.
- * Time spent in each categories is stored by time window.
- * Time spent is stored in seconds.
- * TODO document format
+ * Time spent in each categories is stored by time window, in seconds.
+ *
+ * Database is a text file with a header line, and one entry for each subsequent lines.
+ * Each line is tab-separated into columns.
+ * The first column is the time window start, in rfc3339 format.
+ * The next columns represent the time spent in each category, in seconds (integer).
+ * The header line contain the category name for each columns.
+ * Each category must be uniquely named.
  */
 struct Database {
     file: File,
@@ -110,7 +116,11 @@ struct Database {
 type DatabaseTime = chrono::DateTime<chrono::Local>;
 
 impl Database {
-    /// Open a database
+    /** Open a database.
+     * If the database does not exist, create a new one.
+     * If the database exist and is compatible (contains the requested categories), use it.
+     * If it exists but is not compatible, add the new categories. TODO
+     */
     pub fn open(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
@@ -126,7 +136,6 @@ impl Database {
                         categories: db_categories,
                     })
                 } else {
-                    // TODO add categories at the end, rewrite db with 0s in new categories
                     unimplemented!()
                 }
             }
@@ -137,7 +146,9 @@ impl Database {
         }
     }
 
-    /// Create a new database
+    /** Create a new empty database with the specified categories.
+     * Creates parent directories if needed.
+     */
     pub fn create_new(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
@@ -160,7 +171,7 @@ impl Database {
         })
     }
 
-    /// Get database categories, in order
+    /// Get database categories, ordered by column index.
     pub fn categories(&self) -> &Vec<String> {
         &self.categories
     }
@@ -189,8 +200,9 @@ impl Database {
         }
     }
 
-    /// Check db entries, return (last_line_start_offset, file_len)
-    /// Assume reader cursor is at start of second line.
+    /** Check db entries, return (last_line_start_offset, file_len)
+     * Assume reader cursor is at start of second line.
+     */
     fn scan_db_entries(
         reader: &mut io::BufReader<File>,
         header_len: usize,
@@ -224,10 +236,11 @@ impl Database {
         }
     }
 
-    /// Parse the last entry of the database file.
-    /// If entry is correct: return time window start and duration for categories.
-    /// If entry is empty: return None.
-    /// If entry is incorrect: error.
+    /** Parse the last entry of the database file.
+     * If entry is correct: return time window start and duration for categories.
+     * If entry is empty: return None.
+     * If entry is incorrect: error.
+     */
     pub fn get_last_entry(&mut self) -> io::Result<Option<(DatabaseTime, Vec<time::Duration>)>> {
         self.file
             .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
@@ -269,7 +282,7 @@ impl Database {
         }
     }
 
-    /// Rewrite the last entry in the database, return the entry len including newline.
+    /// Rewrite the last entry in the database.
     pub fn rewrite_last_entry(
         &mut self,
         window_start: &DatabaseTime,
@@ -282,30 +295,39 @@ impl Database {
             write!(&mut line, "\t{}", d.as_secs()).unwrap();
         }
         line.push('\n');
-        // Update db file
+        // Write line to end of file, removing any excess data
         self.file
             .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
         self.file.write_all(line.as_bytes())?;
         self.file_len = self.last_line_start_offset + line.len();
         self.file.set_len(self.file_len as u64)?;
-        self.file.sync_all()
+        self.file.sync_all() // May be costly, but we do not call that often...
     }
 
+    /// Move the last line cursor to the next line, locking the current last line content.
     pub fn lock_last_entry(&mut self) {
         self.last_line_start_offset = self.file_len
     }
 }
 
+/** Category duration counter.
+ * Stores durations for each category in memory.
+ * This is used to store the durations for the current time window.
+ * Changes in active window are recorded in this structure.
+ * Asynchronously, the accumulated durations are written to the database.
+ */
 struct CategoryDurationCounter {
-    current_category_index: Option<usize>, // Index in duration_by_category
+    current_category_index: Option<usize>, // Index for categories / durations
     last_category_update: time::Instant,
     categories: Vec<String>,
     durations: Vec<time::Duration>,
 }
 
 impl CategoryDurationCounter {
-    /// Create a new time tracking structure.
-    /// Starts with no defined category.
+    /** Create a new counter for the given categories.
+     * All durations are initialized to 0.
+     * The current category is set to undefined.
+     */
     pub fn new(categories: &[String]) -> Self {
         CategoryDurationCounter {
             current_category_index: None,
@@ -317,22 +339,28 @@ impl CategoryDurationCounter {
         }
     }
 
+    /// Access accumulated durations. durations[i] is duration for categories[i].
     pub fn durations(&self) -> &Vec<time::Duration> {
         &self.durations
     }
 
+    /// Set values for all durations. For resuming a time window from database.
     pub fn set_durations(&mut self, durations: Vec<time::Duration>) {
+        assert_eq!(durations.len(), self.categories.len());
         self.durations = durations
     }
 
+    /// Set all durations to 0. For time window change.
     pub fn reset_durations(&mut self) {
         for mut d in &mut self.durations {
             *d = time::Duration::new(0, 0)
         }
     }
 
+    /** Record a change in active window.
+     * Duration for the previous category is accumulated to the table, if not undefined.
+     */
     pub fn category_changed(&mut self, category: Option<&str>) {
-        println!("Category change: {:?}", category);
         let now = time::Instant::now();
         if let Some(index) = self.current_category_index {
             self.durations[index] += now.duration_since(self.last_category_update)
