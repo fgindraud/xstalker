@@ -276,33 +276,32 @@ impl Database {
         durations: &[time::Duration],
     ) -> io::Result<()> {
         // Build line text
-        let mut line = window_start.to_string();
+        let mut line = window_start.to_rfc3339();
         for d in durations {
             use std::fmt::Write;
             write!(&mut line, "\t{}", d.as_secs()).unwrap();
         }
+        line.push('\n');
         // Update db file
         self.file
             .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
         self.file.write_all(line.as_bytes())?;
         self.file_len = self.last_line_start_offset + line.len();
         self.file.set_len(self.file_len as u64)?;
+        println!("Write to disk");
         self.file.sync_all()
     }
 
     pub fn lock_last_entry(&mut self) {
         self.last_line_start_offset = self.file_len
     }
-
-    pub fn write_to_disk(&mut self) {
-        println!("Write to disk") // FIXME rm
-    }
 }
 
 struct CategoryDurationCounter {
     current_category_index: Option<usize>, // Index in duration_by_category
     last_category_update: time::Instant,
-    duration_by_category: Vec<(String, time::Duration)>,
+    categories: Vec<String>,
+    durations: Vec<time::Duration>,
 }
 
 impl CategoryDurationCounter {
@@ -312,32 +311,32 @@ impl CategoryDurationCounter {
         CategoryDurationCounter {
             current_category_index: None,
             last_category_update: time::Instant::now(),
-            duration_by_category: categories
-                .into_iter()
-                .map(|s| (s.clone(), time::Duration::new(0, 0)))
+            categories: categories.into_iter().cloned().collect(),
+            durations: std::iter::repeat(time::Duration::new(0, 0))
+                .take(categories.len())
                 .collect(),
         }
     }
 
-    pub fn set_durations(&mut self, durations: &[time::Duration]) {
-        for ((_category, ref mut stored_duration), duration) in
-            self.duration_by_category.iter_mut().zip(durations)
-        {
-            *stored_duration = *duration
-        }
+    pub fn durations(&self) -> &Vec<time::Duration> {
+        &self.durations
+    }
+
+    pub fn set_durations(&mut self, durations: Vec<time::Duration>) {
+        self.durations = durations
     }
 
     pub fn category_changed(&mut self, category: Option<&str>) {
         println!("Category change: {:?}", category);
         let now = time::Instant::now();
         if let Some(index) = self.current_category_index {
-            self.duration_by_category[index].1 += now.duration_since(self.last_category_update)
+            self.durations[index] += now.duration_since(self.last_category_update)
         }
         self.current_category_index = category.map(|ref s| {
-            self.duration_by_category
+            self.categories
                 .iter()
                 .enumerate()
-                .find(|(_i, (category_name, _duration))| category_name == s)
+                .find(|(_i, category_name)| category_name == s)
                 .unwrap()
                 .0
         });
@@ -370,28 +369,23 @@ fn main() -> io::Result<()> {
     // Determine boundary of time windows
     let now = DatabaseTime::from(time::SystemTime::now());
 
-    if let Some((time, durations)) = db.get_last_entry()? {
-        if now < time {
-            // Probably a timezone change, stop
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Database time is in the future",
-            ));
-        } else if time <= now && now < time + chrono::Duration::from_std(time_window_size).unwrap()
-        {
-            // We are still in the time window of the last entry.
-            // "resume" the duration_counter
-            // do not freeze last entry
-            duration_counter.set_durations(&durations);
+    let window_start = {
+        if let Some((time, durations)) = db.get_last_entry()? {
+            if time <= now && now < time + chrono::Duration::from_std(time_window_size).unwrap() {
+                // We are still in the time window of the last entry, resume the window.
+                duration_counter.set_durations(durations);
+                time
+            } else {
+                // Outside of last entry time window: create a new window.
+                // This includes the case where now < time (timezone change, system clock adjustement).
+                db.lock_last_entry();
+                now
+            }
         } else {
-            // New time window, starting now
-            // freeze the last entry
+            // No last entry: create new window.
+            now
         }
-    } else {
-        // No last entry.
-        // Time window starts now.
-        // No need to freeze the last entry (doesn't exist).
-    }
+    };
 
     // State is shared between tasks in tokio.
     // Rc = single thread, RefCell for mutability when needed.
@@ -420,20 +414,23 @@ fn main() -> io::Result<()> {
                 duration_counter.borrow_mut().category_changed(category);
                 Ok(())
             })
-            .map_err(|err| panic!("ActiveWindowChanges listener failed: {}", err));
+            .map_err(|err| panic!("ActiveWindowChanges listener failed:\n{}", err));
         runtime.spawn(task);
     }
     {
         let db = Rc::clone(&db);
+        let duration_counter = Rc::clone(&duration_counter);
         // Periodically write database to file
         let task = tokio::timer::Interval::new(
             time::Instant::now() + db_write_interval,
             db_write_interval,
         ).for_each(move |_instant| {
-            db.borrow_mut().write_to_disk();
+            db.borrow_mut()
+                .rewrite_last_entry(&window_start, duration_counter.borrow().durations())
+                .unwrap();
             Ok(())
         })
-            .map_err(|err| panic!("Write to file task failed: {}", err));
+            .map_err(|err| panic!("Write to database file failed:\n{}", err));
         runtime.spawn(task);
     }
     Ok(runtime.run().expect("tokio runtime failure"))
