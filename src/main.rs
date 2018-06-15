@@ -102,6 +102,7 @@ where
 struct Database {
     file: File,
     last_line_start_offset: usize,
+    file_len: usize,
     categories: Vec<String>,
 }
 
@@ -116,11 +117,12 @@ impl Database {
                 let mut reader = io::BufReader::new(f);
                 let (db_categories, header_len) = Database::parse_categories(&mut reader)?;
                 if is_subset_of(&classifier_categories, &db_categories) {
-                    let last_line_start_offset =
+                    let (last_line_start_offset, file_len) =
                         Database::scan_db_entries(&mut reader, header_len, db_categories.len())?;
                     Ok(Database {
                         file: reader.into_inner(),
                         last_line_start_offset: last_line_start_offset,
+                        file_len: file_len,
                         categories: db_categories,
                     })
                 } else {
@@ -150,6 +152,7 @@ impl Database {
         Ok(Database {
             file: f,
             last_line_start_offset: header.len(),
+            file_len: header.len(),
             categories: classifier_categories
                 .into_iter()
                 .map(|s| s.into())
@@ -186,13 +189,13 @@ impl Database {
         }
     }
 
-    /// Check db entries, return last_line_start_offset
+    /// Check db entries, return (last_line_start_offset, file_len)
     /// Assume reader cursor is at start of second line.
     fn scan_db_entries(
         reader: &mut io::BufReader<File>,
         header_len: usize,
         nb_categories: usize,
-    ) -> io::Result<usize> {
+    ) -> io::Result<(usize, usize)> {
         let mut line = String::new();
         let mut line_nb = 2; // Start at line 2
         let mut offset = header_len;
@@ -201,7 +204,7 @@ impl Database {
             let line_len = reader.read_line(&mut line)?;
             // Entry line must be either empty, or be '\n'-terminated and have the right fields
             if line_len == 0 {
-                return Ok(offset);
+                return Ok((offset, offset + prev_line_len));
             }
             if line.pop() != Some('\n') {
                 return Err(bad_data(format!(
@@ -271,12 +274,24 @@ impl Database {
         &mut self,
         window_start: &DatabaseTime,
         durations: &[time::Duration],
-    ) -> io::Result<usize> {
-        Ok(0)
+    ) -> io::Result<()> {
+        // Build line text
+        let mut line = window_start.to_string();
+        for d in durations {
+            use std::fmt::Write;
+            write!(&mut line, "\t{}", d.as_secs()).unwrap();
+        }
+        // Update db file
+        self.file
+            .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
+        self.file.write_all(line.as_bytes())?;
+        self.file_len = self.last_line_start_offset + line.len();
+        self.file.set_len(self.file_len as u64)?;
+        self.file.sync_all()
     }
 
-    pub fn lock_last_entry(&mut self, last_entry_len: usize) {
-        self.last_line_start_offset += last_entry_len
+    pub fn lock_last_entry(&mut self) {
+        self.last_line_start_offset = self.file_len
     }
 
     pub fn write_to_disk(&mut self) {
