@@ -288,7 +288,6 @@ impl Database {
         self.file.write_all(line.as_bytes())?;
         self.file_len = self.last_line_start_offset + line.len();
         self.file.set_len(self.file_len as u64)?;
-        println!("Write to disk");
         self.file.sync_all()
     }
 
@@ -326,6 +325,12 @@ impl CategoryDurationCounter {
         self.durations = durations
     }
 
+    pub fn reset_durations(&mut self) {
+        for mut d in &mut self.durations {
+            *d = time::Duration::new(0, 0)
+        }
+    }
+
     pub fn category_changed(&mut self, category: Option<&str>) {
         println!("Category change: {:?}", category);
         let now = time::Instant::now();
@@ -342,6 +347,31 @@ impl CategoryDurationCounter {
         });
         self.last_category_update = now
     }
+}
+
+fn write_durations_to_disk(
+    db: &mut Database,
+    duration_counter: &CategoryDurationCounter,
+    window_start: &DatabaseTime,
+) -> io::Result<()> {
+    println!("Write to disk");
+
+    db.rewrite_last_entry(window_start, duration_counter.durations())
+}
+
+fn change_time_window(
+    db: &mut Database,
+    duration_counter: &mut CategoryDurationCounter,
+    window_start: &mut DatabaseTime,
+    time_window_size: time::Duration,
+) -> io::Result<()> {
+    // Flush current durations values
+    write_durations_to_disk(db, duration_counter, window_start)?;
+    // Create a new time window
+    db.lock_last_entry();
+    duration_counter.reset_durations();
+    *window_start = *window_start + chrono::Duration::from_std(time_window_size).unwrap();
+    Ok(())
 }
 
 fn main() -> io::Result<()> {
@@ -386,11 +416,14 @@ fn main() -> io::Result<()> {
             now
         }
     };
+    let duration_to_next_window_change = time_window_size
+        - chrono::Duration::to_std(&now.signed_duration_since(window_start)).unwrap();
 
     // State is shared between tasks in tokio.
     // Rc = single thread, RefCell for mutability when needed.
     let db = Rc::new(RefCell::new(db));
     let duration_counter = Rc::new(RefCell::new(duration_counter));
+    let window_start = Rc::new(RefCell::new(window_start));
 
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
@@ -420,17 +453,40 @@ fn main() -> io::Result<()> {
     {
         let db = Rc::clone(&db);
         let duration_counter = Rc::clone(&duration_counter);
+        let window_start = Rc::clone(&window_start);
         // Periodically write database to file
         let task = tokio::timer::Interval::new(
             time::Instant::now() + db_write_interval,
             db_write_interval,
         ).for_each(move |_instant| {
-            db.borrow_mut()
-                .rewrite_last_entry(&window_start, duration_counter.borrow().durations())
-                .unwrap();
+            write_durations_to_disk(
+                &mut db.borrow_mut(),
+                &duration_counter.borrow(),
+                &window_start.borrow(),
+            ).unwrap();
             Ok(())
         })
             .map_err(|err| panic!("Write to database file failed:\n{}", err));
+        runtime.spawn(task);
+    }
+    {
+        let db = Rc::clone(&db);
+        let duration_counter = Rc::clone(&duration_counter);
+        let window_start = Rc::clone(&window_start);
+        // Periodically change time window (TODO write to file before)
+        let task = tokio::timer::Interval::new(
+            time::Instant::now() + duration_to_next_window_change,
+            time_window_size,
+        ).for_each(move |_instant| {
+            change_time_window(
+                &mut db.borrow_mut(),
+                &mut duration_counter.borrow_mut(),
+                &mut window_start.borrow_mut(),
+                time_window_size,
+            ).unwrap();
+            Ok(())
+        })
+            .map_err(|err| panic!("Change time window failed:\n{}", err));
         runtime.spawn(task);
     }
     Ok(runtime.run().expect("tokio runtime failure"))
