@@ -134,8 +134,9 @@ fn run_daemon(
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
-    let mut runtime = tokio::runtime::current_thread::Runtime::new()?;
-    {
+    // TODO error propagation: spawn requires Result<(),()>
+    // use block_on() with some kind of merging ?
+    let all_category_changes = {
         let duration_counter = Rc::clone(&duration_counter);
         // Listen to active window changes.
         // On each window change, update the duration_counter
@@ -147,43 +148,42 @@ fn run_daemon(
             duration_counter.borrow_mut().category_changed(category);
         }
         // Asynchronous stream of reactions to changes
-        let task = active_window_changes
+        active_window_changes
             .for_each(move |active_window| {
+                println!("task_handle_window_change");
                 let category = classifier.classify(&active_window);
                 duration_counter.borrow_mut().category_changed(category);
                 Ok(())
             })
-            .map_err(|err| panic!("ActiveWindowChanges listener failed:\n{}", err));
-        runtime.spawn(task);
-    }
-    {
+            .map_err(|err| panic!("ActiveWindowChanges listener failed:\n{}", err))
+    };
+    let all_db_writes = {
         let db = Rc::clone(&db);
         let duration_counter = Rc::clone(&duration_counter);
         let window_start = Rc::clone(&window_start);
         // Periodically write database to file
-        let task = tokio::timer::Interval::new(
-            time::Instant::now() + db_write_interval,
-            db_write_interval,
-        ).for_each(move |_instant| {
-            write_durations_to_disk(
-                &mut db.borrow_mut(),
-                &duration_counter.borrow(),
-                &window_start.borrow(),
-            ).unwrap();
-            Ok(())
-        })
-            .map_err(|err| panic!("Write to database file failed:\n{}", err));
-        runtime.spawn(task);
-    }
-    {
+        tokio::timer::Interval::new(time::Instant::now() + db_write_interval, db_write_interval)
+            .for_each(move |_instant| {
+                println!("task_write_db");
+                write_durations_to_disk(
+                    &mut db.borrow_mut(),
+                    &duration_counter.borrow(),
+                    &window_start.borrow(),
+                ).unwrap();
+                Ok(())
+            })
+            .map_err(|err| panic!("Write to database file failed:\n{}", err))
+    };
+    let all_time_window_changes = {
         let db = Rc::clone(&db);
         let duration_counter = Rc::clone(&duration_counter);
         let window_start = Rc::clone(&window_start);
-        // Periodically change time window (TODO write to file before)
-        let task = tokio::timer::Interval::new(
+        // Periodically change time window
+        tokio::timer::Interval::new(
             time::Instant::now() + duration_to_next_window_change,
             time_window_size,
         ).for_each(move |_instant| {
+            println!("task_new_time_window");
             change_time_window(
                 &mut db.borrow_mut(),
                 &mut duration_counter.borrow_mut(),
@@ -192,19 +192,18 @@ fn run_daemon(
             ).unwrap();
             Ok(())
         })
-            .map_err(|err| panic!("Change time window failed:\n{}", err));
-        runtime.spawn(task);
-    }
-    runtime.run().expect("tokio runtime failure");
+            .map_err(|err| panic!("Change time window failed:\n{}", err))
+    };
+
+    let mut runtime = tokio::runtime::current_thread::Runtime::new()?;
+    runtime
+        .block_on(all_category_changes.join3(all_db_writes, all_time_window_changes))
+        .expect("tokio runtime failure");
     Ok(())
 }
 
 fn main() -> Result<(), DebugAsDisplay<String>> {
-    // TODO error handling ?
-    // wrap in function that takes config, and return io::Result<()>
-    // main should parse args and print errors
-
-    // Config
+    // Config TODO from args
     let time_window_size = time::Duration::from_secs(3600);
     let db_write_interval = time::Duration::from_secs(10);
 
