@@ -94,15 +94,19 @@ where
         .all(|a_element| superset.into_iter().any(|b_element| a_element == b_element))
 }
 
-/** Database.
- * TODO document format
+/** Time spent Database.
+ * Time spent in each categories is stored by time window.
  * Time spent is stored in seconds.
+ * TODO document format
  */
 struct Database {
     file: File,
     last_line_start_offset: usize,
     categories: Vec<String>,
 }
+
+/// Time windows are timezone aware, in system local timezone.
+type DatabaseTime = chrono::DateTime<chrono::Local>;
 
 impl Database {
     /// Open a database
@@ -141,7 +145,7 @@ impl Database {
             .write(true)
             .create_new(true)
             .open(path)?;
-        let header = format!("time_slice\t{}\n", classifier_categories.join("\t"));
+        let header = format!("time_window\t{}\n", classifier_categories.join("\t"));
         f.write_all(header.as_bytes())?;
         Ok(Database {
             file: f,
@@ -218,12 +222,10 @@ impl Database {
     }
 
     /// Parse the last entry of the database file.
-    /// If entry is correct: return time slice start and duration for categories.
+    /// If entry is correct: return time window start and duration for categories.
     /// If entry is empty: return None.
     /// If entry is incorrect: error.
-    pub fn get_last_entry(
-        &mut self,
-    ) -> io::Result<Option<(chrono::DateTime<chrono::Local>, Vec<time::Duration>)>> {
+    pub fn get_last_entry(&mut self) -> io::Result<Option<(DatabaseTime, Vec<time::Duration>)>> {
         self.file
             .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
         let mut line = String::new();
@@ -234,36 +236,51 @@ impl Database {
         }
         // If line exists, it must be '\n'-terminated, must contain time + categories durations
         if line.pop() != Some('\n') {
-            return Err(bad_data("database last line is not newline terminated"));
+            return Err(bad_data("database: last entry: not newline terminated"));
         }
         let mut elements = line.split('\t');
-        if let Some(time_slice_text) = elements.next() {
-            // Read entry time field
-            let time_slice = chrono::DateTime::from_str(time_slice_text).map_err(|err| {
-                bad_data(format!("database: cannot parse last line time: {}", err))
+        if let Some(time_window_text) = elements.next() {
+            let time_window = DatabaseTime::from_str(time_window_text).map_err(|err| {
+                bad_data(format!(
+                    "database: last entry: cannot parse time window: {}",
+                    err
+                ))
             })?;
             // Read durations of entry
             let mut durations = Vec::with_capacity(self.categories.len());
             for s in elements {
                 let seconds = u64::from_str(s).map_err(|err| {
                     bad_data(format!(
-                        "database: cannot parse last line category duration: {}",
+                        "database: last entry: cannot parse category duration: {}",
                         err
                     ))
                 })?;
                 durations.push(time::Duration::from_secs(seconds))
             }
             if durations.len() != self.categories.len() {
-                return Err(bad_data("database last line: field count mismatch"));
+                return Err(bad_data("database: last entry: field count mismatch"));
             }
-            Ok(Some((time_slice, durations)))
+            Ok(Some((time_window, durations)))
         } else {
-            Err(bad_data("database header has no field"))
+            Err(bad_data("database: last entry is empty"))
         }
     }
 
+    /// Rewrite the last entry in the database, return the entry len including newline.
+    pub fn rewrite_last_entry(
+        &mut self,
+        window_start: &DatabaseTime,
+        durations: &[time::Duration],
+    ) -> io::Result<usize> {
+        Ok(0)
+    }
+
+    pub fn lock_last_entry(&mut self, last_entry_len: usize) {
+        self.last_line_start_offset += last_entry_len
+    }
+
     pub fn write_to_disk(&mut self) {
-        println!("Write to disk")
+        println!("Write to disk") // FIXME rm
     }
 }
 
@@ -318,7 +335,7 @@ fn main() -> io::Result<()> {
     // main should parse args and print errors
 
     // Config
-    let time_slice_interval = time::Duration::from_secs(3600);
+    let time_window_size = time::Duration::from_secs(3600);
     let db_write_interval = time::Duration::from_secs(10);
 
     // Setup test classifier
@@ -335,8 +352,8 @@ fn main() -> io::Result<()> {
     let mut db = Database::open(Path::new("test"), classifier.categories())?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories());
 
-    // Determine boundary of time slices
-    let now = chrono::Local::now();
+    // Determine boundary of time windows
+    let now = DatabaseTime::from(time::SystemTime::now());
 
     if let Some((time, durations)) = db.get_last_entry()? {
         if now < time {
@@ -345,20 +362,19 @@ fn main() -> io::Result<()> {
                 io::ErrorKind::Other,
                 "Database time is in the future",
             ));
-        } else if time <= now
-            && now < time + chrono::Duration::from_std(time_slice_interval).unwrap()
+        } else if time <= now && now < time + chrono::Duration::from_std(time_window_size).unwrap()
         {
-            // We are still in the time slice of the last entry.
+            // We are still in the time window of the last entry.
             // "resume" the duration_counter
             // do not freeze last entry
             duration_counter.set_durations(&durations);
         } else {
-            // New time slice, starting now
+            // New time window, starting now
             // freeze the last entry
         }
     } else {
         // No last entry.
-        // Time slice starts now.
+        // Time window starts now.
         // No need to freeze the last entry (doesn't exist).
     }
 

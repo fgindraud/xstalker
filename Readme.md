@@ -10,7 +10,7 @@ Status
 WIP.
 * Retrieves `WM_NAME` and `WM_CLASS`
 * TODO:
-	* Statistical system : gather category time slice by hour slots
+	* Statistical system : gather category duration by time window
 	* More context: cwd of pid ?
 	* Update on `WM_*` change on active window ?
 
