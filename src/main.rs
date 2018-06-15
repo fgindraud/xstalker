@@ -2,6 +2,7 @@
 extern crate chrono;
 extern crate tokio;
 use std::cell::RefCell;
+use std::fmt;
 use std::io;
 use std::path::Path;
 use std::rc::Rc;
@@ -91,27 +92,14 @@ fn change_time_window(
     Ok(())
 }
 
-fn main() -> io::Result<()> {
-    // TODO error handling ?
-    // wrap in function that takes config, and return io::Result<()>
-    // main should parse args and print errors
-
-    // Config
-    let time_window_size = time::Duration::from_secs(3600);
-    let db_write_interval = time::Duration::from_secs(10);
-
-    // Setup test classifier
-    let mut classifier = Classifier::new();
-    classifier.append_filter(&"coding", |md| {
-        md.class
-            .as_ref()
-            .map(|class| class == "konsole")
-            .unwrap_or(false)
-    });
-    classifier.append_filter(&"unknown", |_| true);
-
+fn run_daemon(
+    classifier: Classifier,
+    db_file: &Path,
+    db_write_interval: time::Duration,
+    time_window_size: time::Duration,
+) -> Result<(), io::Error> {
     // Setup state
-    let mut db = Database::open(Path::new("test"), classifier.categories())?;
+    let mut db = Database::open(db_file, classifier.categories())?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories());
 
     // Determine boundary of time windows
@@ -207,5 +195,43 @@ fn main() -> io::Result<()> {
             .map_err(|err| panic!("Change time window failed:\n{}", err));
         runtime.spawn(task);
     }
-    Ok(runtime.run().expect("tokio runtime failure"))
+    runtime.run().expect("tokio runtime failure");
+    Ok(())
+}
+
+fn main() -> Result<(), DebugAsDisplay<String>> {
+    // TODO error handling ?
+    // wrap in function that takes config, and return io::Result<()>
+    // main should parse args and print errors
+
+    // Config
+    let time_window_size = time::Duration::from_secs(3600);
+    let db_write_interval = time::Duration::from_secs(10);
+
+    // Setup test classifier
+    let mut classifier = Classifier::new();
+    classifier.append_filter(&"coding", |md| {
+        md.class
+            .as_ref()
+            .map(|class| class == "konsole")
+            .unwrap_or(false)
+    });
+    classifier.append_filter(&"unknown", |_| true);
+
+    run_daemon(
+        classifier,
+        Path::new("test"),
+        db_write_interval,
+        time_window_size,
+    ).map_err(|err| DebugAsDisplay(err.to_string()))
+}
+
+/** If main returns Result<_, E>, E will be printed with fmt::Debug.
+ * By wrapping T in this structure, it will be printed nicely with fmt::Display.
+ */
+struct DebugAsDisplay<T>(T);
+impl<T: fmt::Display> fmt::Debug for DebugAsDisplay<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        self.0.fmt(f)
+    }
 }

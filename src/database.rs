@@ -125,10 +125,10 @@ impl Database {
         let header_len = reader.read_line(&mut header)?;
         // Line must exist, must be '\n'-terminated, must contain at least 'time' header.
         if header_len == 0 {
-            return Err(bad_data("database has no header line"));
+            return Err(bad_data("Database has no header line"));
         }
         if header.pop() != Some('\n') {
-            return Err(bad_data("database header line is not newline terminated"));
+            return Err(bad_data("Database header line is not newline terminated"));
         }
         let mut elements = header.split('\t');
         if let Some(_time_header) = elements.next() {
@@ -136,10 +136,10 @@ impl Database {
             if has_unique_elements(&categories) {
                 Ok((categories, header_len))
             } else {
-                Err(bad_data("database categories must be unique"))
+                Err(bad_data("Database categories must be unique"))
             }
         } else {
-            Err(bad_data("database header has no field"))
+            Err(bad_data("Database header has no field"))
         }
     }
 
@@ -163,13 +163,13 @@ impl Database {
             }
             if line.pop() != Some('\n') {
                 return Err(bad_data(format!(
-                    "database entry at line {}: not newline terminated",
+                    "Database entry at line {}: not newline terminated",
                     line_nb
                 )));
             }
             if line.split('\t').count() != nb_categories + 1 {
                 return Err(bad_data(format!(
-                    "database entry at line {}: field count mismatch",
+                    "Database entry at line {}: field count mismatch",
                     line_nb
                 )));
             }
@@ -195,13 +195,13 @@ impl Database {
         }
         // If line exists, it must be '\n'-terminated, must contain time + categories durations
         if line.pop() != Some('\n') {
-            return Err(bad_data("database: last entry: not newline terminated"));
+            return Err(bad_data("Database: last entry: not newline terminated"));
         }
         let mut elements = line.split('\t');
         if let Some(time_window_text) = elements.next() {
             let time_window = DatabaseTime::from_str(time_window_text).map_err(|err| {
                 bad_data(format!(
-                    "database: last entry: cannot parse time window: {}",
+                    "Database: last entry: cannot parse time window: {}",
                     err
                 ))
             })?;
@@ -210,18 +210,18 @@ impl Database {
             for s in elements {
                 let seconds = u64::from_str(s).map_err(|err| {
                     bad_data(format!(
-                        "database: last entry: cannot parse category duration: {}",
+                        "Database: last entry: cannot parse category duration: {}",
                         err
                     ))
                 })?;
                 durations.push(time::Duration::from_secs(seconds))
             }
             if durations.len() != self.categories.len() {
-                return Err(bad_data("database: last entry: field count mismatch"));
+                return Err(bad_data("Database: last entry: field count mismatch"));
             }
             Ok(Some((time_window, durations)))
         } else {
-            Err(bad_data("database: last entry is empty"))
+            Err(bad_data("Database: last entry is empty"))
         }
     }
 
