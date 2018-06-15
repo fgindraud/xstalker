@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::fmt;
 use std::io;
 use std::path::Path;
-use std::rc::Rc;
 use std::time;
 use tokio::prelude::*;
 
@@ -125,19 +124,14 @@ fn run_daemon(
     let duration_to_next_window_change = time_window_size
         - chrono::Duration::to_std(&now.signed_duration_since(window_start)).unwrap();
 
-    // State is shared between tasks in tokio.
-    // Rc = single thread, RefCell for mutability when needed.
-    let db = Rc::new(RefCell::new(db));
-    let duration_counter = Rc::new(RefCell::new(duration_counter));
-    let window_start = Rc::new(RefCell::new(window_start));
+    let db = RefCell::new(db);
+    let duration_counter = RefCell::new(duration_counter);
+    let window_start = RefCell::new(window_start);
 
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
-    // TODO error propagation: spawn requires Result<(),()>
-    // use block_on() with some kind of merging ?
     let all_category_changes = {
-        let duration_counter = Rc::clone(&duration_counter);
         // Listen to active window changes.
         // On each window change, update the duration_counter
         let active_window_changes = ActiveWindowChanges::new()?;
@@ -149,7 +143,7 @@ fn run_daemon(
         }
         // Asynchronous stream of reactions to changes
         active_window_changes
-            .for_each(move |active_window| {
+            .for_each(|active_window| {
                 println!("task_handle_window_change");
                 let category = classifier.classify(&active_window);
                 duration_counter.borrow_mut().category_changed(category);
@@ -158,12 +152,9 @@ fn run_daemon(
             .map_err(|err| panic!("ActiveWindowChanges listener failed:\n{}", err))
     };
     let all_db_writes = {
-        let db = Rc::clone(&db);
-        let duration_counter = Rc::clone(&duration_counter);
-        let window_start = Rc::clone(&window_start);
         // Periodically write database to file
         tokio::timer::Interval::new(time::Instant::now() + db_write_interval, db_write_interval)
-            .for_each(move |_instant| {
+            .for_each(|_instant| {
                 println!("task_write_db");
                 write_durations_to_disk(
                     &mut db.borrow_mut(),
@@ -175,14 +166,11 @@ fn run_daemon(
             .map_err(|err| panic!("Write to database file failed:\n{}", err))
     };
     let all_time_window_changes = {
-        let db = Rc::clone(&db);
-        let duration_counter = Rc::clone(&duration_counter);
-        let window_start = Rc::clone(&window_start);
         // Periodically change time window
         tokio::timer::Interval::new(
             time::Instant::now() + duration_to_next_window_change,
             time_window_size,
-        ).for_each(move |_instant| {
+        ).for_each(|_instant| {
             println!("task_new_time_window");
             change_time_window(
                 &mut db.borrow_mut(),
