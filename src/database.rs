@@ -170,12 +170,14 @@ impl Database {
             let nb_fields = line.split('\t').count();
             if nb_fields != nb_categories + 1 {
                 return Err(bad_data(format!(
-                    "Line {}: Field count: expected {}, got {}",
+                    "Line {}: Field count: expected {}, got {}:\n{:?}",
                     line_nb,
                     nb_categories + 1,
-                    nb_fields
+                    nb_fields,
+                    line
                 )));
             }
+            line.clear(); // Reset buffer for next line (read_line appends content)
             line_nb += 1;
             offset += prev_line_len;
             prev_line_len = line_len;

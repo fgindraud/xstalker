@@ -3,7 +3,6 @@ extern crate chrono;
 extern crate tokio;
 use std::cell::RefCell;
 use std::fmt;
-use std::io;
 use std::path::Path;
 use std::time;
 use tokio::prelude::*;
@@ -70,10 +69,9 @@ fn write_durations_to_disk(
     db: &mut Database,
     duration_counter: &CategoryDurationCounter,
     window_start: &DatabaseTime,
-) -> io::Result<()> {
-    println!("Write to disk");
-
+) -> Result<(), String> {
     db.rewrite_last_entry(window_start, duration_counter.durations())
+        .map_err(|e| format!("Failed to write database file: {}", e))
 }
 
 fn change_time_window(
@@ -81,7 +79,7 @@ fn change_time_window(
     duration_counter: &mut CategoryDurationCounter,
     window_start: &mut DatabaseTime,
     time_window_size: time::Duration,
-) -> io::Result<()> {
+) -> Result<(), String> {
     // Flush current durations values
     write_durations_to_disk(db, duration_counter, window_start)?;
     // Create a new time window
@@ -162,7 +160,7 @@ fn run_daemon(
                     &mut db.borrow_mut(),
                     &duration_counter.borrow(),
                     &window_start.borrow(),
-                ).map_err(|e| format!("Failed to write database file: {}", e))
+                )
             });
 
     // Periodically change time window
@@ -177,7 +175,7 @@ fn run_daemon(
                 &mut duration_counter.borrow_mut(),
                 &mut window_start.borrow_mut(),
                 time_window_size,
-            ).map_err(|e| format!("Failed to change the time window: {}", e))
+            )
         });
 
     // Create a tokio runtime to implement an event loop.
@@ -192,6 +190,7 @@ fn run_daemon(
 
 fn main() -> Result<(), DebugAsDisplay<String>> {
     // Config TODO from args
+    // use clap crate ?
     let time_window_size = time::Duration::from_secs(3600);
     let db_write_interval = time::Duration::from_secs(10);
 
