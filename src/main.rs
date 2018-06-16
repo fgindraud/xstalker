@@ -21,21 +21,37 @@ use database::{CategoryDurationCounter, Database, DatabaseTime};
 mod xcb_stalker;
 use xcb_stalker::ActiveWindowChanges;
 
-/** Classifier: stores rules used to determine categories for time spent.
+/// Classifier: determines the category based on active window metadata.
+trait Classifier {
+    /// Returns the set of all categories defined in the classifier.
+    fn categories(&self) -> Result<Vec<String>, String>;
+
+    /// Returns the category name for the metadata, or None if not matched.
+    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, String>;
+}
+
+/** TestClassifier: stores rules used to determine categories for time spent.
  * Rules are stored in an ordered list.
  * The first matching rule in the list chooses the category.
  * A category can appear in multiple rules.
  */
-struct Classifier {
+struct TestClassifier {
     filters: Vec<(String, Box<Fn(&ActiveWindowMetadata) -> bool>)>,
 }
-
-impl Classifier {
+impl TestClassifier {
     /// Create a new classifier with no rules.
     fn new() -> Self {
-        Classifier {
+        let mut classifier = TestClassifier {
             filters: Vec::new(),
-        }
+        };
+        classifier.append_filter(&"coding", |md| {
+            md.class
+                .as_ref()
+                .map(|class| class == "konsole")
+                .unwrap_or(false)
+        });
+        classifier.append_filter(&"unknown", |_| true);
+        classifier
     }
     /// Add a rule at the end of the list, for the given category.
     fn append_filter<F>(&mut self, category: &str, filter: F)
@@ -45,24 +61,24 @@ impl Classifier {
         self.filters
             .push((String::from(category), Box::new(filter)));
     }
-    /// Return the list of all defined categories, unique.
-    fn categories(&self) -> Vec<&str> {
-        let mut categories: Vec<&str> = self.filters
+}
+impl Classifier for TestClassifier {
+    fn categories(&self) -> Result<Vec<String>, String> {
+        let mut categories: Vec<String> = self.filters
             .iter()
-            .map(|(category, _)| category.as_str())
+            .map(|(category, _)| category.clone())
             .collect();
         categories.sort();
         categories.dedup();
-        categories
+        Ok(categories)
     }
-    /// Determine the category for the given window metadata.
-    fn classify(&self, metadata: &ActiveWindowMetadata) -> Option<&str> {
-        self.filters
+
+    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, String> {
+        Ok(self.filters
             .iter()
             .find(|(_category, filter)| filter(metadata))
-            .map(|(category, _filter)| category.as_str())
+            .map(|(category, _filter)| category.clone()))
     }
-    // TODO read rules from simple language ?
 }
 
 fn write_durations_to_disk(
@@ -90,13 +106,14 @@ fn change_time_window(
 }
 
 fn run_daemon(
-    classifier: Classifier,
+    classifier: &Classifier,
     db_file: &Path,
     db_write_interval: time::Duration,
     time_window_size: time::Duration,
 ) -> Result<(), String> {
     // Setup state
-    let mut db = Database::open(db_file, classifier.categories())
+    let classifier_categories = classifier.categories()?;
+    let mut db = Database::open(db_file, classifier_categories)
         .map_err(|e| format!("Unable to open database '{}':\n{}", db_file.display(), e))?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories());
     let active_window_changes =
@@ -131,7 +148,7 @@ fn run_daemon(
         let initial_metadata = active_window_changes
             .get_current_metadata()
             .map_err(|e| format!("Unable to get window metadata:\n{}", e))?;
-        let initial_category = classifier.classify(&initial_metadata);
+        let initial_category = classifier.classify(&initial_metadata)?;
         duration_counter.category_changed(initial_category);
     }
 
@@ -145,7 +162,7 @@ fn run_daemon(
         .map_err(|e| format!("Window metadata listener failed:\n{}", e))
         .for_each(|active_window| {
             println!("task_handle_window_change");
-            let category = classifier.classify(&active_window);
+            let category = classifier.classify(&active_window)?;
             duration_counter.borrow_mut().category_changed(category);
             Ok(())
         });
@@ -195,17 +212,10 @@ fn main() -> Result<(), DebugAsDisplay<String>> {
     let db_write_interval = time::Duration::from_secs(10);
 
     // Setup test classifier
-    let mut classifier = Classifier::new();
-    classifier.append_filter(&"coding", |md| {
-        md.class
-            .as_ref()
-            .map(|class| class == "konsole")
-            .unwrap_or(false)
-    });
-    classifier.append_filter(&"unknown", |_| true);
+    let classifier = TestClassifier::new();
 
     run_daemon(
-        classifier,
+        &classifier,
         Path::new("test"),
         db_write_interval,
         time_window_size,

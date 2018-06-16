@@ -64,7 +64,7 @@ impl Database {
      * If the database exist and is compatible (contains the requested categories), use it.
      * If it exists but is not compatible, add the new categories. TODO
      */
-    pub fn open(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
+    pub fn open(path: &Path, classifier_categories: Vec<String>) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
@@ -92,7 +92,7 @@ impl Database {
     /** Create a new empty database with the specified categories.
      * Creates parent directories if needed.
      */
-    pub fn create_new(path: &Path, classifier_categories: Vec<&str>) -> io::Result<Self> {
+    pub fn create_new(path: &Path, classifier_categories: Vec<String>) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
         }
@@ -107,10 +107,7 @@ impl Database {
             file: f,
             last_line_start_offset: header.len(),
             file_len: header.len(),
-            categories: classifier_categories
-                .into_iter()
-                .map(|s| s.into())
-                .collect(),
+            categories: classifier_categories,
         })
     }
 
@@ -304,7 +301,7 @@ impl CategoryDurationCounter {
     /** Record a change in active window.
      * Duration for the previous category is accumulated to the table, if not undefined.
      */
-    pub fn category_changed(&mut self, category: Option<&str>) {
+    pub fn category_changed(&mut self, category: Option<String>) {
         let now = time::Instant::now();
         if let Some(index) = self.current_category_index {
             self.durations[index] += now.duration_since(self.last_category_update)
@@ -313,7 +310,7 @@ impl CategoryDurationCounter {
             self.categories
                 .iter()
                 .enumerate()
-                .find(|(_i, category_name)| category_name == s)
+                .find(|(_i, category_name)| *category_name == s)
                 .unwrap()
                 .0
         });
