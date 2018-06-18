@@ -168,8 +168,9 @@ fn run_daemon(
         let initial_metadata = active_window_changes
             .get_current_metadata()
             .map_err(|e| ErrorMessage::new("Unable to get window metadata", e))?;
+        let now = time::Instant::now();
         let initial_category = classifier.classify(&initial_metadata)?;
-        duration_counter.category_changed(initial_category);
+        duration_counter.category_changed(initial_category, now);
     }
 
     // Wrap shared state in RefCell: cannot prove with type that mutations are exclusive.
@@ -182,8 +183,11 @@ fn run_daemon(
         .map_err(|e| ErrorMessage::new("Window metadata listener failed", e))
         .for_each(|active_window| {
             println!("task_handle_window_change");
+            let instant = time::Instant::now(); // Classifier may take some time.
             let category = classifier.classify(&active_window)?;
-            duration_counter.borrow_mut().category_changed(category);
+            duration_counter
+                .borrow_mut()
+                .category_changed(category, instant);
             Ok(())
         });
 
