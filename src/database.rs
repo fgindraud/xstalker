@@ -289,9 +289,9 @@ impl CategoryDurationCounter {
      * Duration for the previous category is accumulated to the table, if not undefined.
      * Assumes that the category name is in the set given to new().
      */
-    pub fn category_changed(&mut self, category: Option<String>, instant: time::Instant) {
+    pub fn category_changed(&mut self, category: Option<String>, timestamp: time::Instant) {
         if let Some(index) = self.current_category_index {
-            self.durations[index] += instant.duration_since(self.last_category_update)
+            self.durations[index] += timestamp.duration_since(self.last_category_update)
         }
         self.current_category_index = category.map(|ref s| {
             self.categories
@@ -301,6 +301,6 @@ impl CategoryDurationCounter {
                 .expect("category name is unknown")
                 .0
         });
-        self.last_category_update = instant
+        self.last_category_update = timestamp
     }
 }

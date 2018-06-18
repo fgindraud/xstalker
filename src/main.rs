@@ -165,12 +165,11 @@ fn run_daemon(
 
     // Set initial category
     {
-        let initial_metadata = active_window_changes
+        let (initial_metadata, timestamp) = active_window_changes
             .get_current_metadata()
             .map_err(|e| ErrorMessage::new("Unable to get window metadata", e))?;
-        let now = time::Instant::now();
         let initial_category = classifier.classify(&initial_metadata)?;
-        duration_counter.category_changed(initial_category, now);
+        duration_counter.category_changed(initial_category, timestamp);
     }
 
     // Wrap shared state in RefCell: cannot prove with type that mutations are exclusive.
@@ -181,13 +180,12 @@ fn run_daemon(
     // Listen to active window changes.
     let all_category_changes = active_window_changes
         .map_err(|e| ErrorMessage::new("Window metadata listener failed", e))
-        .for_each(|active_window| {
+        .for_each(|(active_window_metadata, timestamp)| {
             println!("task_handle_window_change");
-            let instant = time::Instant::now(); // Classifier may take some time.
-            let category = classifier.classify(&active_window)?;
+            let category = classifier.classify(&active_window_metadata)?;
             duration_counter
                 .borrow_mut()
-                .category_changed(category, instant);
+                .category_changed(category, timestamp);
             Ok(())
         });
 

@@ -5,6 +5,7 @@ extern crate xcb; // for xcb_stalker
 use std;
 use std::io;
 use std::os::unix::io::AsRawFd;
+use std::time;
 use tokio::prelude::*;
 use tokio::reactor::PollEvented2 as PollEvented; // Tokio is changing interfaces, temporary
 
@@ -77,8 +78,9 @@ impl Stalker {
         })
     }
 
-    /// Get the current active window metadata.
-    fn get_active_window_metadata(&self) -> io::Result<ActiveWindowMetadata> {
+    /// Get the current active window metadata, and timestamp of change.
+    fn get_active_window_metadata(&self) -> io::Result<(ActiveWindowMetadata, time::Instant)> {
+        let timestamp = time::Instant::now();
         let w = self.get_active_window()?;
         // Requests
         let title = self.get_text_property(w, xcb::ATOM_WM_NAME);
@@ -92,10 +94,13 @@ impl Stalker {
             }
             None => text,
         });
-        Ok(ActiveWindowMetadata {
-            title: title,
-            class: class,
-        })
+        Ok((
+            ActiveWindowMetadata {
+                title: title,
+                class: class,
+            },
+            timestamp,
+        ))
     }
 
     /// Process all pending events.
@@ -253,14 +258,14 @@ impl ActiveWindowChanges {
 
     /// Request the current metadata, irrespective of the stream state.
     /// This can be used for initialisation, before the first change.
-    pub fn get_current_metadata(&self) -> io::Result<ActiveWindowMetadata> {
+    pub fn get_current_metadata(&self) -> io::Result<(ActiveWindowMetadata, time::Instant)> {
         self.inner.get_ref().get_active_window_metadata()
     }
 }
 
 /// Asynchronous Stream implementation.
 impl Stream for ActiveWindowChanges {
-    type Item = ActiveWindowMetadata;
+    type Item = (ActiveWindowMetadata, time::Instant);
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
