@@ -87,6 +87,10 @@ pub struct ActiveWindowMetadata {
     class: Option<String>,
 }
 
+/// Classifier trait and impls.
+mod classifier;
+use classifier::Classifier;
+
 /// Database time recording
 mod database;
 use database::{CategoryDurationCounter, Database, DatabaseTime};
@@ -94,66 +98,6 @@ use database::{CategoryDurationCounter, Database, DatabaseTime};
 /// Xcb interface
 mod xcb_stalker;
 use xcb_stalker::ActiveWindowChanges;
-
-/// Classifier: determines the category based on active window metadata.
-trait Classifier {
-    /// Returns the set of all categories defined in the classifier.
-    fn categories(&self) -> Result<UniqueCategories, ErrorMessage>;
-
-    /// Returns the category name for the metadata, or None if not matched.
-    /// The category must be in the set returned by categories().
-    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage>;
-}
-
-/** TestClassifier: stores rules used to determine categories for time spent.
- * Rules are stored in an ordered list.
- * The first matching rule in the list chooses the category.
- * A category can appear in multiple rules.
- */
-struct TestClassifier {
-    filters: Vec<(String, Box<Fn(&ActiveWindowMetadata) -> bool>)>,
-}
-impl TestClassifier {
-    /// Create a new classifier with no rules.
-    fn new() -> Self {
-        let mut classifier = TestClassifier {
-            filters: Vec::new(),
-        };
-        classifier.append_filter(&"coding", |md| {
-            md.class
-                .as_ref()
-                .map(|class| class == "konsole")
-                .unwrap_or(false)
-        });
-        classifier.append_filter(&"unknown", |_| true);
-        classifier
-    }
-    /// Add a rule at the end of the list, for the given category.
-    fn append_filter<F>(&mut self, category: &str, filter: F)
-    where
-        F: 'static + Fn(&ActiveWindowMetadata) -> bool,
-    {
-        self.filters
-            .push((String::from(category), Box::new(filter)));
-    }
-}
-impl Classifier for TestClassifier {
-    fn categories(&self) -> Result<UniqueCategories, ErrorMessage> {
-        Ok(UniqueCategories::make_unique(
-            self.filters
-                .iter()
-                .map(|(category, _)| category.clone())
-                .collect(),
-        ))
-    }
-
-    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
-        Ok(self.filters
-            .iter()
-            .find(|(_category, filter)| filter(metadata))
-            .map(|(category, _filter)| category.clone()))
-    }
-}
 
 fn write_durations_to_disk(
     db: &mut Database,
@@ -292,7 +236,7 @@ fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
     let db_write_interval = time::Duration::from_secs(10);
 
     // Setup test classifier
-    let classifier = TestClassifier::new();
+    let classifier = classifier::TestClassifier::new();
 
     run_daemon(
         &classifier,
