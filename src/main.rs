@@ -123,7 +123,7 @@ fn change_time_window(
 }
 
 fn run_daemon(
-    classifier: &Classifier,
+    classifier: &mut Classifier,
     db_file: &Path,
     db_write_interval: time::Duration,
     time_window_size: time::Duration,
@@ -236,13 +236,13 @@ fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
     let db_write_interval = time::Duration::from_secs(10);
 
     // Setup classifier TODO from args
-    let classifier = classifier::ExternalProcess::new("./classifier").map_err(|e| {
+    let mut classifier = classifier::ExternalProcess::new("./classifier").map_err(|e| {
         let e = ErrorMessage::new("Cannot create subprocess classifier", e);
         ShowErrorTraceback(e)
     })?;
 
     run_daemon(
-        &classifier,
+        &mut classifier,
         Path::new("test"),
         db_write_interval,
         time_window_size,
