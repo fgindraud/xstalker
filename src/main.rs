@@ -236,7 +236,7 @@ fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
     let db_write_interval = time::Duration::from_secs(10);
 
     // Setup classifier TODO from args
-    let classifier = classifier::ExternalProcess::new("classifier").map_err(|e| {
+    let classifier = classifier::ExternalProcess::new("./classifier").map_err(|e| {
         let e = ErrorMessage::new("Cannot create subprocess classifier", e);
         ShowErrorTraceback(e)
     })?;
