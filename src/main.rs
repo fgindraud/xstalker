@@ -4,6 +4,7 @@ extern crate tokio;
 use std::cell::RefCell;
 use std::error;
 use std::fmt;
+use std::io;
 use std::path::Path;
 use std::time;
 use tokio::prelude::*;
@@ -26,7 +27,6 @@ impl ErrorMessage {
     }
 }
 //impl From<String> for ErrorMessage {
-//    // TODO temporary for conversion
 //    fn from(s: String) -> Self {
 //        ErrorMessage {
 //            message: s,
@@ -48,6 +48,7 @@ impl error::Error for ErrorMessage {
     }
 }
 
+/// Metadata for the current active window
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
     title: Option<String>,
@@ -126,9 +127,8 @@ fn write_durations_to_disk(
     db: &mut Database,
     duration_counter: &CategoryDurationCounter,
     window_start: &DatabaseTime,
-) -> Result<(), ErrorMessage> {
+) -> io::Result<()> {
     db.rewrite_last_entry(window_start, duration_counter.durations())
-        .map_err(|e| ErrorMessage::new("Failed to write database file", e))
 }
 
 fn change_time_window(
@@ -136,7 +136,7 @@ fn change_time_window(
     duration_counter: &mut CategoryDurationCounter,
     window_start: &mut DatabaseTime,
     time_window_size: time::Duration,
-) -> Result<(), ErrorMessage> {
+) -> io::Result<()> {
     // Flush current durations values
     write_durations_to_disk(db, duration_counter, window_start)?;
     // Create a new time window
@@ -219,7 +219,9 @@ fn run_daemon(
                     &mut db.borrow_mut(),
                     &duration_counter.borrow(),
                     &window_start.borrow(),
-                )
+                ).map_err(|e| {
+                    ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e)
+                })
             });
 
     // Periodically change time window
@@ -234,7 +236,9 @@ fn run_daemon(
                 &mut duration_counter.borrow_mut(),
                 &mut window_start.borrow_mut(),
                 time_window_size,
-            )
+            ).map_err(|e| {
+                ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e)
+            })
         });
 
     // Create a tokio runtime to implement an event loop.

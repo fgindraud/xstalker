@@ -9,7 +9,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time;
 
-// Shorter io::Error creation
+// io::Error with InvalidData is used for DB formatting errors. Shorten creation.
 fn bad_data<E>(error: E) -> io::Error
 where
     E: Into<Box<std::error::Error + Send + Sync>>,
@@ -167,7 +167,7 @@ impl Database {
             let nb_fields = line.split('\t').count();
             if nb_fields != nb_categories + 1 {
                 return Err(bad_data(format!(
-                    "Line {}: Field count: expected {}, got {}:\n{:?}",
+                    "Line {}: expected {} fields, got {}: {:?}",
                     line_nb,
                     nb_categories + 1,
                     nb_fields,
@@ -212,7 +212,7 @@ impl Database {
             }
             if durations.len() != self.categories.len() {
                 return Err(bad_data(format!(
-                    "Duration fields count: expected {}, got {}",
+                    "Durations: expected {} fields, got {}",
                     self.categories.len(),
                     durations.len()
                 )));
@@ -268,6 +268,7 @@ impl CategoryDurationCounter {
     /** Create a new counter for the given categories.
      * All durations are initialized to 0.
      * The current category is set to undefined.
+     * Categories must be unique.
      */
     pub fn new(categories: &[String]) -> Self {
         CategoryDurationCounter {
@@ -300,6 +301,7 @@ impl CategoryDurationCounter {
 
     /** Record a change in active window.
      * Duration for the previous category is accumulated to the table, if not undefined.
+     * Assumes that the category name is in the set given to new().
      */
     pub fn category_changed(&mut self, category: Option<String>) {
         let now = time::Instant::now();
@@ -311,7 +313,7 @@ impl CategoryDurationCounter {
                 .iter()
                 .enumerate()
                 .find(|(_i, category_name)| *category_name == s)
-                .unwrap()
+                .expect("category name is unknown")
                 .0
         });
         self.last_category_update = now
