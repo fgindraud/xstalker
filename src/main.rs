@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time;
 use tokio::prelude::*;
 
+/// Generic error type: contains a message and a boxed inner error if applicable.
 #[derive(Debug)]
 pub struct ErrorMessage {
     message: String,
@@ -26,14 +27,14 @@ impl ErrorMessage {
         }
     }
 }
-//impl From<String> for ErrorMessage {
-//    fn from(s: String) -> Self {
-//        ErrorMessage {
-//            message: s,
-//            inner: None,
-//        }
-//    }
-//}
+impl From<String> for ErrorMessage {
+    fn from(s: String) -> Self {
+        ErrorMessage {
+            message: s,
+            inner: None,
+        }
+    }
+}
 impl fmt::Display for ErrorMessage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.message.fmt(f)
@@ -45,6 +46,34 @@ impl error::Error for ErrorMessage {
     }
     fn cause(&self) -> Option<&error::Error> {
         self.inner.as_ref().map(|b| b.as_ref())
+    }
+}
+
+/// Store a set of unique category names, in a specific order.
+#[derive(Debug, Clone)]
+pub struct UniqueCategories(Vec<String>);
+impl UniqueCategories {
+    pub fn from_unique(categories: Vec<String>) -> Result<Self, ErrorMessage> {
+        for category in &categories {
+            if categories.iter().filter(|c| *c == category).count() > 1 {
+                return Err(ErrorMessage::from(format!(
+                    "Duplicate category '{}'",
+                    category
+                )));
+            }
+        }
+        Ok(UniqueCategories(categories))
+    }
+    pub fn make_unique(mut categories: Vec<String>) -> Self {
+        categories.sort();
+        categories.dedup();
+        UniqueCategories(categories)
+    }
+}
+impl std::ops::Deref for UniqueCategories {
+    type Target = [String];
+    fn deref(&self) -> &[String] {
+        &self.0
     }
 }
 
@@ -66,9 +95,10 @@ use xcb_stalker::ActiveWindowChanges;
 /// Classifier: determines the category based on active window metadata.
 trait Classifier {
     /// Returns the set of all categories defined in the classifier.
-    fn categories(&self) -> Result<Vec<String>, ErrorMessage>;
+    fn categories(&self) -> Result<UniqueCategories, ErrorMessage>;
 
     /// Returns the category name for the metadata, or None if not matched.
+    /// The category must be in the set returned by categories().
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage>;
 }
 
@@ -105,14 +135,13 @@ impl TestClassifier {
     }
 }
 impl Classifier for TestClassifier {
-    fn categories(&self) -> Result<Vec<String>, ErrorMessage> {
-        let mut categories: Vec<String> = self.filters
-            .iter()
-            .map(|(category, _)| category.clone())
-            .collect();
-        categories.sort();
-        categories.dedup();
-        Ok(categories)
+    fn categories(&self) -> Result<UniqueCategories, ErrorMessage> {
+        Ok(UniqueCategories::make_unique(
+            self.filters
+                .iter()
+                .map(|(category, _)| category.clone())
+                .collect(),
+        ))
     }
 
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
@@ -154,10 +183,12 @@ fn run_daemon(
 ) -> Result<(), ErrorMessage> {
     let db_filename = db_file.display();
     // Setup state
-    let classifier_categories = classifier.categories()?;
+    let classifier_categories = classifier
+        .categories()
+        .map_err(|e| ErrorMessage::new("Could not get category set", e))?;
     let mut db = Database::open(db_file, classifier_categories)
         .map_err(|e| ErrorMessage::new(format!("Unable to open database '{}'", db_filename), e))?;
-    let mut duration_counter = CategoryDurationCounter::new(db.categories());
+    let mut duration_counter = CategoryDurationCounter::new(db.categories().clone());
     let active_window_changes = ActiveWindowChanges::new()
         .map_err(|e| ErrorMessage::new("Unable to start window event listener", e))?;
 

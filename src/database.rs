@@ -1,4 +1,4 @@
-#![deny(deprecated)]
+use super::UniqueCategories;
 use chrono;
 use std;
 use std::fs;
@@ -15,18 +15,6 @@ where
     E: Into<Box<std::error::Error + Send + Sync>>,
 {
     io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-fn has_unique_elements<T>(sequence: &[T]) -> bool
-where
-    T: PartialEq<T>,
-{
-    sequence.into_iter().all(|tested_element| {
-        sequence
-            .into_iter()
-            .filter(|element| *element == tested_element)
-            .count() == 1
-    })
 }
 
 fn is_subset_of<A, B>(subset: &[A], superset: &[B]) -> bool
@@ -52,7 +40,7 @@ pub struct Database {
     file: File,
     last_line_start_offset: usize,
     file_len: usize,
-    categories: Vec<String>,
+    categories: UniqueCategories,
 }
 
 /// Time windows are timezone aware, in system local timezone.
@@ -64,7 +52,7 @@ impl Database {
      * If the database exist and is compatible (contains the requested categories), use it.
      * If it exists but is not compatible, add the new categories. TODO
      */
-    pub fn open(path: &Path, classifier_categories: Vec<String>) -> io::Result<Self> {
+    pub fn open(path: &Path, classifier_categories: UniqueCategories) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
@@ -92,7 +80,7 @@ impl Database {
     /** Create a new empty database with the specified categories.
      * Creates parent directories if needed.
      */
-    pub fn create_new(path: &Path, classifier_categories: Vec<String>) -> io::Result<Self> {
+    pub fn create_new(path: &Path, classifier_categories: UniqueCategories) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
         }
@@ -112,12 +100,12 @@ impl Database {
     }
 
     /// Get database categories, ordered by column index.
-    pub fn categories(&self) -> &Vec<String> {
+    pub fn categories(&self) -> &UniqueCategories {
         &self.categories
     }
 
     /// Parse header line, return categories and header line len.
-    fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<(Vec<String>, usize)> {
+    fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<(UniqueCategories, usize)> {
         let mut header = String::new();
         let header_len = reader.read_line(&mut header)?;
         // Line must exist, must be '\n'-terminated, must contain at least 'time' header.
@@ -129,11 +117,9 @@ impl Database {
         }
         let mut elements = header.split('\t');
         if let Some(_time_header) = elements.next() {
-            let categories: Vec<String> = elements.map(|s| s.into()).collect();
-            if has_unique_elements(&categories) {
-                Ok((categories, header_len))
-            } else {
-                Err(bad_data("Categories must be unique"))
+            match UniqueCategories::from_unique(elements.map(|s| s.into()).collect()) {
+                Ok(categories) => Ok((categories, header_len)),
+                Err(e) => Err(bad_data(e.to_string())), // FIXME move to ErrorMessage
             }
         } else {
             Err(bad_data("Header has no field"))
@@ -260,7 +246,7 @@ impl Database {
 pub struct CategoryDurationCounter {
     current_category_index: Option<usize>, // Index for categories / durations
     last_category_update: time::Instant,
-    categories: Vec<String>,
+    categories: UniqueCategories,
     durations: Vec<time::Duration>,
 }
 
@@ -268,16 +254,16 @@ impl CategoryDurationCounter {
     /** Create a new counter for the given categories.
      * All durations are initialized to 0.
      * The current category is set to undefined.
-     * Categories must be unique.
      */
-    pub fn new(categories: &[String]) -> Self {
+    pub fn new(categories: UniqueCategories) -> Self {
+        let zeroed_durations = std::iter::repeat(time::Duration::new(0, 0))
+            .take(categories.len())
+            .collect();
         CategoryDurationCounter {
             current_category_index: None,
             last_category_update: time::Instant::now(),
-            categories: categories.into_iter().cloned().collect(),
-            durations: std::iter::repeat(time::Duration::new(0, 0))
-                .take(categories.len())
-                .collect(),
+            categories: categories,
+            durations: zeroed_durations,
         }
     }
 
