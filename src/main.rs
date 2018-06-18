@@ -235,15 +235,18 @@ fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
     let time_window_size = time::Duration::from_secs(3600);
     let db_write_interval = time::Duration::from_secs(10);
 
-    // Setup test classifier
-    let classifier = classifier::TestClassifier::new();
+    // Setup classifier TODO from args
+    let classifier = classifier::ExternalProcess::new("classifier").map_err(|e| {
+        let e = ErrorMessage::new("Cannot create subprocess classifier", e);
+        ShowErrorTraceback(e)
+    })?;
 
     run_daemon(
         &classifier,
         Path::new("test"),
         db_write_interval,
         time_window_size,
-    ).map_err(|err| ShowErrorTraceback(err))
+    ).map_err(|e| ShowErrorTraceback(e))
 }
 
 /** If main returns Result<_, E>, E will be printed with fmt::Debug.

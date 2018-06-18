@@ -1,4 +1,5 @@
 use super::{ActiveWindowMetadata, ErrorMessage, UniqueCategories};
+use std::process;
 
 /// Classifier: determines the category based on active window metadata.
 pub trait Classifier {
@@ -8,6 +9,30 @@ pub trait Classifier {
     /// Returns the category name for the metadata, or None if not matched.
     /// The category must be in the set returned by categories().
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage>;
+}
+
+/** Classify using an external process.
+ *
+ */
+pub struct ExternalProcess {
+    child: process::Child,
+}
+
+impl ExternalProcess {
+    pub fn new(program: &str) -> Result<Self, ErrorMessage> {
+        let child = process::Command::new(program)
+            .spawn()
+            .map_err(|e| ErrorMessage::new(format!("Cannot spawn subprocess '{}'", program), e))?;
+        Ok(ExternalProcess { child: child })
+    }
+}
+impl Classifier for ExternalProcess {
+    fn categories(&self) -> Result<UniqueCategories, ErrorMessage> {
+        Ok(UniqueCategories(Vec::new()))
+    }
+    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
+        Ok(None)
+    }
 }
 
 /** TestClassifier: stores rules used to determine categories for time spent.
