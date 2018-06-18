@@ -119,7 +119,7 @@ impl Database {
         if let Some(_time_header) = elements.next() {
             match UniqueCategories::from_unique(elements.map(|s| s.into()).collect()) {
                 Ok(categories) => Ok((categories, header_len)),
-                Err(e) => Err(bad_data(e.to_string())), // FIXME move to ErrorMessage
+                Err(e) => Err(bad_data(e)),
             }
         } else {
             Err(bad_data("Header has no field"))

@@ -13,13 +13,13 @@ use tokio::prelude::*;
 #[derive(Debug)]
 pub struct ErrorMessage {
     message: String,
-    inner: Option<Box<error::Error>>,
+    inner: Option<Box<error::Error + Send + Sync>>,
 }
 impl ErrorMessage {
     pub fn new<M, E>(message: M, cause: E) -> Self
     where
         M: Into<String>,
-        E: error::Error + 'static,
+        E: error::Error + Send + Sync + 'static,
     {
         ErrorMessage {
             message: message.into(),
@@ -45,7 +45,10 @@ impl error::Error for ErrorMessage {
         self.message.as_str()
     }
     fn cause(&self) -> Option<&error::Error> {
-        self.inner.as_ref().map(|b| b.as_ref())
+        match &self.inner {
+            Some(b) => Some(b.as_ref()),
+            None => None,
+        }
     }
 }
 
