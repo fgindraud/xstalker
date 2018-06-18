@@ -2,10 +2,48 @@
 extern crate chrono;
 extern crate tokio;
 use std::cell::RefCell;
+use std::error;
 use std::fmt;
 use std::path::Path;
 use std::time;
 use tokio::prelude::*;
+
+#[derive(Debug)]
+pub struct ErrorMessage {
+    message: String,
+    inner: Option<Box<error::Error>>,
+}
+impl ErrorMessage {
+    pub fn new<M: Into<String>>(message: M) -> Self {
+        ErrorMessage {
+            message: message.into(),
+            inner: None,
+        }
+    }
+    pub fn with_cause<M, E>(message: M, cause: E) -> Self
+    where
+        M: Into<String>,
+        E: error::Error + 'static,
+    {
+        ErrorMessage {
+            message: message.into(),
+            inner: Some(Box::new(cause)),
+        }
+    }
+}
+impl fmt::Display for ErrorMessage {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.message.fmt(f)
+    }
+}
+impl error::Error for ErrorMessage {
+    fn description(&self) -> &str {
+        self.message.as_str()
+    }
+    fn cause(&self) -> Option<&error::Error> {
+        self.inner.as_ref().map(|b| b.as_ref())
+    }
+}
 
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
@@ -205,7 +243,7 @@ fn run_daemon(
         .map(|(_, _, _)| ())
 }
 
-fn main() -> Result<(), DebugAsDisplay<String>> {
+fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
     // Config TODO from args
     // use clap crate ?
     let time_window_size = time::Duration::from_secs(3600);
@@ -219,15 +257,33 @@ fn main() -> Result<(), DebugAsDisplay<String>> {
         Path::new("test"),
         db_write_interval,
         time_window_size,
-    ).map_err(|err| DebugAsDisplay(err))
+    ).map_err(|err| ShowErrorTraceback(ErrorMessage::new(err)))
 }
 
 /** If main returns Result<_, E>, E will be printed with fmt::Debug.
- * By wrapping T in this structure, it will be printed nicely with fmt::Display.
+ * Wrap an Error in this to print a newline delimited error message.
  */
-struct DebugAsDisplay<T>(T);
-impl<T: fmt::Display> fmt::Debug for DebugAsDisplay<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        self.0.fmt(f)
+struct ShowErrorTraceback<T: error::Error>(T);
+impl<T: error::Error> fmt::Debug for ShowErrorTraceback<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", &self.0)?;
+        for err in Traceback(self.0.cause()) {
+            write!(f, ":\n{}", err)?;
+        }
+        Ok(())
+    }
+}
+
+/// Iterate on error causes
+struct Traceback<'a>(Option<&'a error::Error>);
+impl<'a> Iterator for Traceback<'a> {
+    type Item = &'a error::Error;
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.0;
+        self.0 = match &current {
+            Some(err) => err.cause(),
+            None => None,
+        };
+        current
     }
 }
