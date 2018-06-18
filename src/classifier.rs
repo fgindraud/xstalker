@@ -1,13 +1,12 @@
 use super::{ActiveWindowMetadata, ErrorMessage, UniqueCategories};
 use std;
-use std::io;
 use std::io::{BufRead, BufReader};
 use std::process;
 
 /// Classifier: determines the category based on active window metadata.
 pub trait Classifier {
     /// Returns the set of all categories defined in the classifier.
-    fn categories(&self) -> Result<UniqueCategories, ErrorMessage>;
+    fn categories(&self) -> UniqueCategories;
 
     /// Returns the category name for the metadata, or None if not matched.
     /// The category must be in the set returned by categories().
@@ -21,6 +20,7 @@ pub struct ExternalProcess {
     child: process::Child,
     stdin: process::ChildStdin,
     stdout: BufReader<process::ChildStdout>,
+    categories: UniqueCategories,
 }
 
 impl ExternalProcess {
@@ -29,16 +29,31 @@ impl ExternalProcess {
             .stdin(process::Stdio::piped())
             .stdout(process::Stdio::piped())
             .spawn()
-            .map_err(|e| ErrorMessage::new(format!("Cannot spawn subprocess '{}'", program), e))?;
+            .map_err(|e| ErrorMessage::new(format!("Cannot start subprocess '{}'", program), e))?;
         // Extract piped IO descriptors
         let stdin =
             std::mem::replace(&mut child.stdin, None).expect("Child process must have stdin");
         let stdout =
             std::mem::replace(&mut child.stdout, None).expect("Child process must have stdout");
+        // Get category set from first line, tab separated.
+        let mut stdout = BufReader::new(stdout);
+        let categories = {
+            let mut line = String::new();
+            let line_len = stdout
+                .read_line(&mut line)
+                .map_err(|e| ErrorMessage::new("Subprocess: cannot read first line", e))?;
+            if line.pop() != Some('\n') {
+                return Err(ErrorMessage::from("Subprocess: empty output"));
+            }
+            let categories: Vec<String> = line.split('\t').map(|s| s.into()).collect();
+            UniqueCategories::from_unique(categories)
+                .map_err(|e| ErrorMessage::new("Subprocess: categories not unique", e))?
+        };
         Ok(ExternalProcess {
             child: child,
             stdin: stdin,
-            stdout: BufReader::new(stdout),
+            stdout: stdout,
+            categories: categories,
         })
     }
 }
@@ -49,8 +64,8 @@ impl Drop for ExternalProcess {
     }
 }
 impl Classifier for ExternalProcess {
-    fn categories(&self) -> Result<UniqueCategories, ErrorMessage> {
-        Ok(UniqueCategories(Vec::new()))
+    fn categories(&self) -> UniqueCategories {
+        self.categories.clone()
     }
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
         Ok(None)
@@ -90,13 +105,13 @@ impl TestClassifier {
     }
 }
 impl Classifier for TestClassifier {
-    fn categories(&self) -> Result<UniqueCategories, ErrorMessage> {
-        Ok(UniqueCategories::make_unique(
+    fn categories(&self) -> UniqueCategories {
+        UniqueCategories::make_unique(
             self.filters
                 .iter()
                 .map(|(category, _)| category.clone())
                 .collect(),
-        ))
+        )
     }
 
     fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {

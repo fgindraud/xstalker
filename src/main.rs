@@ -27,10 +27,10 @@ impl ErrorMessage {
         }
     }
 }
-impl From<String> for ErrorMessage {
-    fn from(s: String) -> Self {
+impl<T: Into<String>> From<T> for ErrorMessage {
+    fn from(t: T) -> Self {
         ErrorMessage {
-            message: s,
+            message: t.into(),
             inner: None,
         }
     }
@@ -130,9 +130,7 @@ fn run_daemon(
 ) -> Result<(), ErrorMessage> {
     let db_filename = db_file.display();
     // Setup state
-    let classifier_categories = classifier
-        .categories()
-        .map_err(|e| ErrorMessage::new("Could not get category set", e))?;
+    let classifier_categories = classifier.categories();
     let mut db = Database::open(db_file, classifier_categories)
         .map_err(|e| ErrorMessage::new(format!("Unable to open database '{}'", db_filename), e))?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories().clone());
