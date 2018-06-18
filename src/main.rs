@@ -14,13 +14,7 @@ pub struct ErrorMessage {
     inner: Option<Box<error::Error>>,
 }
 impl ErrorMessage {
-    pub fn new<M: Into<String>>(message: M) -> Self {
-        ErrorMessage {
-            message: message.into(),
-            inner: None,
-        }
-    }
-    pub fn with_cause<M, E>(message: M, cause: E) -> Self
+    pub fn new<M, E>(message: M, cause: E) -> Self
     where
         M: Into<String>,
         E: error::Error + 'static,
@@ -31,6 +25,15 @@ impl ErrorMessage {
         }
     }
 }
+//impl From<String> for ErrorMessage {
+//    // TODO temporary for conversion
+//    fn from(s: String) -> Self {
+//        ErrorMessage {
+//            message: s,
+//            inner: None,
+//        }
+//    }
+//}
 impl fmt::Display for ErrorMessage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.message.fmt(f)
@@ -62,10 +65,10 @@ use xcb_stalker::ActiveWindowChanges;
 /// Classifier: determines the category based on active window metadata.
 trait Classifier {
     /// Returns the set of all categories defined in the classifier.
-    fn categories(&self) -> Result<Vec<String>, String>;
+    fn categories(&self) -> Result<Vec<String>, ErrorMessage>;
 
     /// Returns the category name for the metadata, or None if not matched.
-    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, String>;
+    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage>;
 }
 
 /** TestClassifier: stores rules used to determine categories for time spent.
@@ -101,7 +104,7 @@ impl TestClassifier {
     }
 }
 impl Classifier for TestClassifier {
-    fn categories(&self) -> Result<Vec<String>, String> {
+    fn categories(&self) -> Result<Vec<String>, ErrorMessage> {
         let mut categories: Vec<String> = self.filters
             .iter()
             .map(|(category, _)| category.clone())
@@ -111,7 +114,7 @@ impl Classifier for TestClassifier {
         Ok(categories)
     }
 
-    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, String> {
+    fn classify(&self, metadata: &ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
         Ok(self.filters
             .iter()
             .find(|(_category, filter)| filter(metadata))
@@ -123,9 +126,9 @@ fn write_durations_to_disk(
     db: &mut Database,
     duration_counter: &CategoryDurationCounter,
     window_start: &DatabaseTime,
-) -> Result<(), String> {
+) -> Result<(), ErrorMessage> {
     db.rewrite_last_entry(window_start, duration_counter.durations())
-        .map_err(|e| format!("Failed to write database file: {}", e))
+        .map_err(|e| ErrorMessage::new("Failed to write database file", e))
 }
 
 fn change_time_window(
@@ -133,7 +136,7 @@ fn change_time_window(
     duration_counter: &mut CategoryDurationCounter,
     window_start: &mut DatabaseTime,
     time_window_size: time::Duration,
-) -> Result<(), String> {
+) -> Result<(), ErrorMessage> {
     // Flush current durations values
     write_durations_to_disk(db, duration_counter, window_start)?;
     // Create a new time window
@@ -148,21 +151,22 @@ fn run_daemon(
     db_file: &Path,
     db_write_interval: time::Duration,
     time_window_size: time::Duration,
-) -> Result<(), String> {
+) -> Result<(), ErrorMessage> {
+    let db_filename = db_file.display();
     // Setup state
     let classifier_categories = classifier.categories()?;
     let mut db = Database::open(db_file, classifier_categories)
-        .map_err(|e| format!("Unable to open database '{}':\n{}", db_file.display(), e))?;
+        .map_err(|e| ErrorMessage::new(format!("Unable to open database '{}'", db_filename), e))?;
     let mut duration_counter = CategoryDurationCounter::new(db.categories());
-    let active_window_changes =
-        ActiveWindowChanges::new().map_err(|e| format!("Unable to start event listener:\n{}", e))?;
+    let active_window_changes = ActiveWindowChanges::new()
+        .map_err(|e| ErrorMessage::new("Unable to start window event listener", e))?;
 
     // Determine current time window
     let now = DatabaseTime::from(time::SystemTime::now());
     let window_start = {
-        if let Some((time, durations)) = db.get_last_entry()
-            .map_err(|e| format!("Unable to read last database entry:\n{}", e))?
-        {
+        if let Some((time, durations)) = db.get_last_entry().map_err(|e| {
+            ErrorMessage::new(format!("Unable to read last entry of '{}'", db_filename), e)
+        })? {
             if time <= now && now < time + chrono::Duration::from_std(time_window_size).unwrap() {
                 // We are still in the time window of the last entry, resume the window.
                 duration_counter.set_durations(durations);
@@ -185,7 +189,7 @@ fn run_daemon(
     {
         let initial_metadata = active_window_changes
             .get_current_metadata()
-            .map_err(|e| format!("Unable to get window metadata:\n{}", e))?;
+            .map_err(|e| ErrorMessage::new("Unable to get window metadata", e))?;
         let initial_category = classifier.classify(&initial_metadata)?;
         duration_counter.category_changed(initial_category);
     }
@@ -197,7 +201,7 @@ fn run_daemon(
 
     // Listen to active window changes.
     let all_category_changes = active_window_changes
-        .map_err(|e| format!("Window metadata listener failed:\n{}", e))
+        .map_err(|e| ErrorMessage::new("Window metadata listener failed", e))
         .for_each(|active_window| {
             println!("task_handle_window_change");
             let category = classifier.classify(&active_window)?;
@@ -208,7 +212,7 @@ fn run_daemon(
     // Periodically write database to file
     let all_db_writes =
         tokio::timer::Interval::new(time::Instant::now() + db_write_interval, db_write_interval)
-            .map_err(|e| format!("Timer error: {}", e))
+            .map_err(|e| ErrorMessage::new("Timer error", e))
             .for_each(|_instant| {
                 println!("task_write_db");
                 write_durations_to_disk(
@@ -222,7 +226,7 @@ fn run_daemon(
     let all_time_window_changes = tokio::timer::Interval::new(
         time::Instant::now() + duration_to_next_window_change,
         time_window_size,
-    ).map_err(|e| format!("Timer error: {}", e))
+    ).map_err(|e| ErrorMessage::new("Timer error", e))
         .for_each(|_instant| {
             println!("task_new_time_window");
             change_time_window(
@@ -237,7 +241,7 @@ fn run_daemon(
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
     let mut runtime = tokio::runtime::current_thread::Runtime::new()
-        .map_err(|e| format!("Unable to create tokio runtime:\n{}", e))?;
+        .map_err(|e| ErrorMessage::new("Unable to create tokio runtime", e))?;
     runtime
         .block_on(all_category_changes.join3(all_db_writes, all_time_window_changes))
         .map(|(_, _, _)| ())
@@ -257,7 +261,7 @@ fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
         Path::new("test"),
         db_write_interval,
         time_window_size,
-    ).map_err(|err| ShowErrorTraceback(ErrorMessage::new(err)))
+    ).map_err(|err| ShowErrorTraceback(err))
 }
 
 /** If main returns Result<_, E>, E will be printed with fmt::Debug.
