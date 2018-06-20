@@ -1,5 +1,6 @@
 #![deny(deprecated)]
 extern crate chrono;
+#[macro_use]
 extern crate clap;
 extern crate tokio;
 use std::cell::RefCell;
@@ -223,6 +224,7 @@ fn run_daemon(
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
+    // TODO log durations on db writes
     let mut runtime = tokio::runtime::current_thread::Runtime::new()
         .map_err(|e| ErrorMessage::new("Unable to create tokio runtime", e))?;
     runtime
@@ -230,30 +232,56 @@ fn run_daemon(
         .map(|(_, _, _)| ())
 }
 
-fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
-    let matches = clap::App::new(env!("CARGO_PKG_NAME"))
-        .version(env!("CARGO_PKG_VERSION"))
-        .author(env!("CARGO_PKG_AUTHORS"))
-        .about(env!("CARGO_PKG_DESCRIPTION"))
+fn do_main() -> Result<(), ErrorMessage> {
+    let matches = app_from_crate!()
+        .arg(
+            clap::Arg::with_name("time-window")
+                .long("time-window")
+                .help("Maximum time window covered by a database entry")
+                .takes_value(true)
+                .value_name("time_secs")
+                .default_value("3600"),
+        )
+        .arg(
+            clap::Arg::with_name("db-write")
+                .long("db-write")
+                .help("Interval at which the db is written to disk")
+                .takes_value(true)
+                .value_name("time_secs")
+                .default_value("60"),
+        )
         .get_matches();
 
-    // Config TODO from args
-    // use clap crate ?
-    let time_window_size = time::Duration::from_secs(3600);
-    let db_write_interval = time::Duration::from_secs(10);
+    let time_window_size_secs = matches
+        .value_of("time-window")
+        .unwrap()
+        .parse()
+        .map_err(|e| ErrorMessage::new("Unable to parse time window", e))?;
+    let db_write_interval_secs = matches
+        .value_of("db-write")
+        .unwrap()
+        .parse()
+        .map_err(|e| ErrorMessage::new("Unable to parse time window", e))?;
+    if (!(0 < db_write_interval_secs && db_write_interval_secs < time_window_size_secs)) {
+        return Err(ErrorMessage::from(
+            "Wrong time intervals: must follow 0 < db_write < time_window",
+        ));
+    }
 
     // Setup classifier TODO from args
-    let mut classifier = classifier::ExternalProcess::new("./classifier").map_err(|e| {
-        let e = ErrorMessage::new("Cannot create subprocess classifier", e);
-        ShowErrorTraceback(e)
-    })?;
+    let mut classifier = classifier::ExternalProcess::new("./classifier")
+        .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?;
 
     run_daemon(
         &mut classifier,
         Path::new("test"),
-        db_write_interval,
-        time_window_size,
-    ).map_err(|e| ShowErrorTraceback(e))
+        time::Duration::from_secs(db_write_interval_secs),
+        time::Duration::from_secs(time_window_size_secs),
+    )
+}
+
+fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
+    do_main().map_err(|e| ShowErrorTraceback(e))
 }
 
 /** If main returns Result<_, E>, E will be printed with fmt::Debug.

@@ -192,7 +192,7 @@ impl Database {
             // Read durations of entry
             let mut durations = Vec::with_capacity(self.categories.len());
             for s in elements {
-                let seconds = u64::from_str(s)
+                let seconds: u64 = s.parse()
                     .map_err(|err| bad_data(format!("Cannot parse category duration: {}", err)))?;
                 durations.push(time::Duration::from_secs(seconds))
             }
