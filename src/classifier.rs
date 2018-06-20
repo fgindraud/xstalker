@@ -33,6 +33,7 @@ pub struct ExternalProcess {
 }
 
 impl ExternalProcess {
+    /// Start a subprocess
     pub fn new(program: &str) -> Result<Self, ErrorMessage> {
         let mut child = process::Command::new(program)
             .stdin(process::Stdio::piped())
@@ -52,7 +53,7 @@ impl ExternalProcess {
         let mut stdout = BufReader::new(stdout);
         let categories = {
             let mut line = String::new();
-            let line_len = stdout
+            stdout
                 .read_line(&mut line)
                 .map_err(|e| ErrorMessage::new("Subprocess: cannot read first line", e))?;
             if line.pop() != Some('\n') {
@@ -95,7 +96,7 @@ impl Classifier for ExternalProcess {
             .map_err(|e| ErrorMessage::new("Subprocess: cannot write to stdin", e))?;
         // Receive category
         let mut line = String::new();
-        let line_len = self.stdout
+        self.stdout
             .read_line(&mut line)
             .map_err(|e| ErrorMessage::new("Subprocess: cannot read reply line", e))?;
         if line.pop() != Some('\n') {

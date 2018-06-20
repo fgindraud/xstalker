@@ -1,5 +1,6 @@
 #![deny(deprecated)]
 extern crate chrono;
+extern crate clap;
 extern crate tokio;
 use std::cell::RefCell;
 use std::error;
@@ -230,6 +231,12 @@ fn run_daemon(
 }
 
 fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
+    let matches = clap::App::new(env!("CARGO_PKG_NAME"))
+        .version(env!("CARGO_PKG_VERSION"))
+        .author(env!("CARGO_PKG_AUTHORS"))
+        .about(env!("CARGO_PKG_DESCRIPTION"))
+        .get_matches();
+
     // Config TODO from args
     // use clap crate ?
     let time_window_size = time::Duration::from_secs(3600);
