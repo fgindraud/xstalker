@@ -235,6 +235,12 @@ fn run_daemon(
 fn do_main() -> Result<(), ErrorMessage> {
     let matches = app_from_crate!()
         .arg(
+            clap::Arg::with_name("db_file")
+                .help("Path to database file used to store activity")
+                .required(true)
+                .index(1),
+        )
+        .arg(
             clap::Arg::with_name("time-window")
                 .long("time-window")
                 .help("Maximum time window covered by a database entry")
@@ -245,7 +251,7 @@ fn do_main() -> Result<(), ErrorMessage> {
         .arg(
             clap::Arg::with_name("db-write")
                 .long("db-write")
-                .help("Interval at which the db is written to disk")
+                .help("Interval at which the database is written to disk")
                 .takes_value(true)
                 .value_name("time_secs")
                 .default_value("60"),
@@ -262,7 +268,7 @@ fn do_main() -> Result<(), ErrorMessage> {
         .unwrap()
         .parse()
         .map_err(|e| ErrorMessage::new("Unable to parse time window", e))?;
-    if (!(0 < db_write_interval_secs && db_write_interval_secs < time_window_size_secs)) {
+    if !(0 < db_write_interval_secs && db_write_interval_secs < time_window_size_secs) {
         return Err(ErrorMessage::from(
             "Wrong time intervals: must follow 0 < db_write < time_window",
         ));
@@ -274,19 +280,20 @@ fn do_main() -> Result<(), ErrorMessage> {
 
     run_daemon(
         &mut classifier,
-        Path::new("test"),
+        Path::new(matches.value_of("db_file").unwrap()),
         time::Duration::from_secs(db_write_interval_secs),
         time::Duration::from_secs(time_window_size_secs),
     )
 }
 
+/** If main returns Result<_, E>, E will be printed with fmt::Debug.
+ * Wrap an Error in this to print a newline delimited error message.
+ */
 fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
     do_main().map_err(|e| ShowErrorTraceback(e))
 }
 
-/** If main returns Result<_, E>, E will be printed with fmt::Debug.
- * Wrap an Error in this to print a newline delimited error message.
- */
+/// Print error causes in a traceback fashion
 struct ShowErrorTraceback<T: error::Error>(T);
 impl<T: error::Error> fmt::Debug for ShowErrorTraceback<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
