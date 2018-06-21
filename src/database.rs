@@ -16,13 +16,20 @@ where
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
-fn is_subset_of<A, B>(subset: &[A], superset: &[B]) -> bool
-where
-    A: PartialEq<B>,
-{
-    subset
-        .into_iter()
-        .all(|a_element| superset.into_iter().any(|b_element| a_element == b_element))
+// TODO WIP
+struct LineCounted<F> {
+    last_line_start_offset: usize,
+    last_line_len: usize,
+    f: F,
+}
+impl<F> LineCounted<F> {
+    fn new(f: F) -> Self {
+        LineCounted {
+            last_line_start_offset: 0,
+            last_line_len: 0,
+            f: f,
+        }
+    }
 }
 
 /** Time spent Database.
@@ -49,14 +56,16 @@ impl Database {
     /** Open a database.
      * If the database does not exist, create a new one.
      * If the database exist and is compatible (contains the requested categories), use it.
-     * If it exists but is not compatible, add the new categories. TODO
+     * If it exists but is not compatible, add the new categories.
      */
     pub fn open(path: &Path, classifier_categories: UniqueCategories) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
                 let mut reader = io::BufReader::new(f);
-                let (db_categories, header_len) = Database::parse_categories(&mut reader)?;
-                if is_subset_of(&classifier_categories, &db_categories) {
+                let (mut db_categories, header_len) = Database::parse_categories(&mut reader)?;
+                let nb_missing_categories = db_categories.extend(classifier_categories);
+                if nb_missing_categories > 0 {
+                    // Can reuse the database as it is
                     let (last_line_start_offset, file_len) =
                         Database::scan_db_entries(&mut reader, header_len, db_categories.len())?;
                     Ok(Database {
@@ -66,6 +75,20 @@ impl Database {
                         categories: db_categories,
                     })
                 } else {
+                    // Put file content in memory
+                    let mut entry_lines = String::new();
+                    reader.read_to_string(&mut entry_lines)?;
+                    // Rewrite file
+                    let entry_suffix: String = std::iter::repeat("\t0")
+                        .take(nb_missing_categories)
+                        .collect();
+                    let mut writer = io::BufWriter::new(reader.into_inner());
+                    writer.seek(io::SeekFrom::Start(0))?;
+                    write!(writer, "time_window\t{}\n", db_categories.join("\t"))?;
+                    for entry in entry_lines.lines() {
+                        write!(writer, "{}{}\n", entry, entry_suffix)?;
+                    }
+
                     unimplemented!()
                 }
             }

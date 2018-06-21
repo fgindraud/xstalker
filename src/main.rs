@@ -58,6 +58,7 @@ impl error::Error for ErrorMessage {
 #[derive(Debug, Clone)]
 pub struct UniqueCategories(Vec<String>);
 impl UniqueCategories {
+    /// Check if given vec has unique elements
     pub fn from_unique(categories: Vec<String>) -> Result<Self, ErrorMessage> {
         for category in &categories {
             if categories.iter().filter(|c| *c == category).count() > 1 {
@@ -69,10 +70,22 @@ impl UniqueCategories {
         }
         Ok(UniqueCategories(categories))
     }
+    /// Make given vec unique. Order is not conserved.
     pub fn make_unique(mut categories: Vec<String>) -> Self {
         categories.sort();
         categories.dedup();
         UniqueCategories(categories)
+    }
+    /// Extend current vec with new categories only. Return slice to inserted elements.
+    pub fn extend(&mut self, categories: UniqueCategories) -> usize {
+        let v = &mut self.0;
+        let initial_len = v.len();
+        for c in categories.0 {
+            if !v[..initial_len].contains(&c) {
+                v.push(c);
+            }
+        }
+        v.len() - initial_len
     }
 }
 impl std::ops::Deref for UniqueCategories {
