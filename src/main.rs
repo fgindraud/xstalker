@@ -266,20 +266,20 @@ fn do_main() -> Result<(), ErrorMessage> {
         .subcommand(
             clap::SubCommand::with_name("process")
                 .about("Classify by using an external subprocess")
-                .after_help(
-                    "Launch a process using the provided program name and arguments.\n\
-                     On every update, the new window metadata is written to the process stdin.\n\
-                     Fields of metadata are on one line, tab separated.\n\
-                     Empty fields are encoded as empty strings (nothing between two tabs).\n\
-                     The initial line sent to the process contains the field names, tab separated.\n\
-                     The process must answer by writing lines to stdout.\n\
-                     It must write an initial line with all possible categories, tab separated.\n\
-                     For each metadata line, it must write a line containing the category name.\n\
-                     An empty line is interpreted as no category, and the duration will be ignored.",
-                )
+                .after_help(classifier::Process::doc())
                 .setting(clap::AppSettings::TrailingVarArg)
-                .arg(clap::Arg::with_name("command").help("Subprocess command").required(true).index(1))
-                .arg(clap::Arg::with_name("args").help("Subprocess arguments").index(2).multiple(true))
+                .arg(
+                    clap::Arg::with_name("command")
+                        .help("Subprocess command")
+                        .required(true)
+                        .index(1),
+                )
+                .arg(
+                    clap::Arg::with_name("args")
+                        .help("Subprocess arguments")
+                        .index(2)
+                        .multiple(true),
+                ),
         )
         .get_matches();
 

@@ -1,5 +1,4 @@
 use super::{ActiveWindowMetadata, ErrorMessage, UniqueCategories};
-use std;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
 use std::process;
@@ -28,7 +27,6 @@ pub trait Classifier {
  */
 pub struct Process {
     child: process::Child,
-    stdin: process::ChildStdin,
     stdout: BufReader<process::ChildStdout>,
     categories: UniqueCategories,
 }
@@ -51,14 +49,13 @@ impl Process {
             .map_err(|e| {
                 ErrorMessage::new(format!("Cannot spawn process '{}'", command_name()), e)
             })?;
-        // Extract piped IO descriptors
-        let mut stdin = std::mem::replace(&mut child.stdin, None).unwrap();
-        let stdout = std::mem::replace(&mut child.stdout, None).unwrap();
-        let mut stdout = BufReader::new(stdout);
-        // Send the field names
-        stdin
+        // Send the field names (unbuffered!)
+        Process::stdin(&mut child)
             .write_all(b"title\tclass\n")
             .map_err(|e| ErrorMessage::new("Process: cannot write to stdin", e))?;
+        // Extract stdout from child instance to wrap it in bufreader.
+        let stdout = child.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout);
         // Get category set from first line, tab separated.
         let categories = {
             let mut line = String::new();
@@ -74,15 +71,35 @@ impl Process {
         };
         Ok(Process {
             child: child,
-            stdin: stdin,
             stdout: stdout,
             categories: categories,
         })
     }
+
+    fn stdin(child: &mut process::Child) -> &mut process::ChildStdin {
+        // Stdin must have been piped by spawn, panic if not available.
+        child.stdin.as_mut().expect("stdin undefined")
+    }
+
+    pub fn doc() -> &'static str {
+        "Launch a process using the provided program name and arguments.\n\
+         \n\
+         On every update, the new window metadata is written to the process stdin.\n\
+         Fields of metadata are on one line, tab separated.\n\
+         Empty fields are encoded as empty strings (nothing between two tabs).\n\
+         The initial line sent to the process contains the field names, tab separated.\n\
+         \n\
+         The process must answer by writing lines to stdout.\n\
+         It must write an initial line with all possible categories, tab separated.\n\
+         For each metadata line, it must write a line containing the category name.\n\
+         An empty line is interpreted as no category, and the duration will be ignored.\n\
+         \n\
+         IMPORTANT: The classifier must output lines without buffering, or xstalker will be blocked."
+    }
 }
 impl Drop for Process {
     fn drop(&mut self) {
-        // FIXME do something with return code ? should drop stdin then wait
+        // child.wait will close stdin to let the process terminate properly with EOF.
         self.child.wait().expect("Process: wait() failed");
     }
 }
@@ -94,13 +111,13 @@ impl Classifier for Process {
         &mut self,
         metadata: &ActiveWindowMetadata,
     ) -> Result<Option<String>, ErrorMessage> {
-        // Send metadata
+        // Send metadata TODO what if \t in metadata ?
         let metadata = format!(
             "{}\t{}\n",
             metadata.title.as_ref().map_or("", |s| s.as_str()),
             metadata.class.as_ref().map_or("", |s| s.as_str())
         );
-        self.stdin
+        Process::stdin(&mut self.child)
             .write_all(metadata.as_bytes())
             .map_err(|e| ErrorMessage::new("Process: cannot write to stdin", e))?;
         // Receive category
