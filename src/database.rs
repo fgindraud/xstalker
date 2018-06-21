@@ -6,7 +6,6 @@ use std::fs::File;
 use std::io;
 use std::io::{BufRead, Read, Seek, Write};
 use std::path::Path;
-use std::str::FromStr;
 use std::time;
 
 // io::Error with InvalidData is used for DB formatting errors. Shorten creation.
@@ -187,7 +186,8 @@ impl Database {
         }
         let mut elements = line.split('\t');
         if let Some(time_window_text) = elements.next() {
-            let time_window = DatabaseTime::from_str(time_window_text)
+            let time_window: DatabaseTime = time_window_text
+                .parse()
                 .map_err(|err| bad_data(format!("Cannot parse time window: {}", err)))?;
             // Read durations of entry
             let mut durations = Vec::with_capacity(self.categories.len());
@@ -297,13 +297,17 @@ impl CategoryDurationCounter {
      * Store durations for the previous category up to now, then changes current category.
      * Assumes that the category name is in the set given to new().
      */
-    pub fn category_changed(&mut self, category: Option<String>, timestamp: time::Instant) {
+    pub fn category_changed<S: AsRef<str>>(
+        &mut self,
+        category: Option<S>,
+        timestamp: time::Instant,
+    ) {
         self.record_current_duration(timestamp);
-        self.current_category_index = category.map(|ref s| {
+        self.current_category_index = category.map(|s| {
             self.categories
                 .iter()
                 .enumerate()
-                .find(|(_i, category_name)| *category_name == s)
+                .find(|(_i, category_name)| category_name.as_str() == s.as_ref())
                 .expect("category name is unknown")
                 .0
         });

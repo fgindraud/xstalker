@@ -26,14 +26,14 @@ pub trait Classifier {
  * Then for each line of metadata, print the category name on stdout.
  * An empty line is considered a None (no category), the time chunk will be ignored.
  */
-pub struct ExternalProcess {
+pub struct Process {
     child: process::Child,
     stdin: process::ChildStdin,
     stdout: BufReader<process::ChildStdout>,
     categories: UniqueCategories,
 }
 
-impl ExternalProcess {
+impl Process {
     /// Start a subprocess
     pub fn new<C, I, S>(command: C, args: I) -> Result<Self, ErrorMessage>
     where
@@ -49,7 +49,7 @@ impl ExternalProcess {
             .stdout(process::Stdio::piped())
             .spawn()
             .map_err(|e| {
-                ErrorMessage::new(format!("Cannot start subprocess '{}'", command_name()), e)
+                ErrorMessage::new(format!("Cannot spawn process '{}'", command_name()), e)
             })?;
         // Extract piped IO descriptors
         let mut stdin = std::mem::replace(&mut child.stdin, None).unwrap();
@@ -58,21 +58,21 @@ impl ExternalProcess {
         // Send the field names
         stdin
             .write_all(b"title\tclass\n")
-            .map_err(|e| ErrorMessage::new("Subprocess: cannot write to stdin", e))?;
+            .map_err(|e| ErrorMessage::new("Process: cannot write to stdin", e))?;
         // Get category set from first line, tab separated.
         let categories = {
             let mut line = String::new();
             stdout
                 .read_line(&mut line)
-                .map_err(|e| ErrorMessage::new("Subprocess: cannot read first line", e))?;
+                .map_err(|e| ErrorMessage::new("Process: cannot read first line", e))?;
             if line.pop() != Some('\n') {
-                return Err(ErrorMessage::from("Subprocess: unexpected end of output"));
+                return Err(ErrorMessage::from("Process: unexpected end of output"));
             }
             let categories: Vec<String> = line.split('\t').map(|s| s.into()).collect();
             UniqueCategories::from_unique(categories)
-                .map_err(|e| ErrorMessage::new("Subprocess: categories not unique", e))?
+                .map_err(|e| ErrorMessage::new("Process: categories not unique", e))?
         };
-        Ok(ExternalProcess {
+        Ok(Process {
             child: child,
             stdin: stdin,
             stdout: stdout,
@@ -80,13 +80,13 @@ impl ExternalProcess {
         })
     }
 }
-impl Drop for ExternalProcess {
+impl Drop for Process {
     fn drop(&mut self) {
         // FIXME do something with return code ? should drop stdin then wait
-        self.child.wait().expect("Child process wait() failed");
+        self.child.wait().expect("Process: wait() failed");
     }
 }
-impl Classifier for ExternalProcess {
+impl Classifier for Process {
     fn categories(&self) -> UniqueCategories {
         self.categories.clone()
     }
@@ -102,14 +102,14 @@ impl Classifier for ExternalProcess {
         );
         self.stdin
             .write_all(metadata.as_bytes())
-            .map_err(|e| ErrorMessage::new("Subprocess: cannot write to stdin", e))?;
+            .map_err(|e| ErrorMessage::new("Process: cannot write to stdin", e))?;
         // Receive category
         let mut line = String::new();
         self.stdout
             .read_line(&mut line)
-            .map_err(|e| ErrorMessage::new("Subprocess: cannot read reply line", e))?;
+            .map_err(|e| ErrorMessage::new("Process: cannot read reply line", e))?;
         if line.pop() != Some('\n') {
-            return Err(ErrorMessage::from("Subprocess: unexpected end of output"));
+            return Err(ErrorMessage::from("Process: unexpected end of output"));
         }
         // Filter
         if line.is_empty() {
@@ -118,7 +118,7 @@ impl Classifier for ExternalProcess {
             Ok(Some(line))
         } else {
             Err(ErrorMessage::from(format!(
-                "Subprocess: undeclared category '{}'",
+                "Process: undeclared category '{}'",
                 line
             )))
         }

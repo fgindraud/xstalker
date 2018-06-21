@@ -231,9 +231,10 @@ fn run_daemon(
     // TODO support signals using tokio_signal crate ?
     let mut runtime = tokio::runtime::current_thread::Runtime::new()
         .map_err(|e| ErrorMessage::new("Unable to create tokio runtime", e))?;
-    runtime
-        .block_on(all_category_changes.join3(all_db_writes, all_time_window_changes))
-        .map(|(_, _, _)| ())
+    runtime.block_on(
+        Future::join3(all_category_changes, all_db_writes, all_time_window_changes)
+            .map(|(_, _, _)| ()),
+    )
 }
 
 fn do_main() -> Result<(), ErrorMessage> {
@@ -302,7 +303,7 @@ fn do_main() -> Result<(), ErrorMessage> {
         ("process", Some(process_args)) => {
             let command_name = process_args.value_of_os("command").unwrap();
             let command_args = process_args.values_of_os("args").unwrap_or_default();
-            classifier::ExternalProcess::new(command_name, command_args)
+            classifier::Process::new(command_name, command_args)
                 .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?
         }
         // TODO return box if multiple impls
