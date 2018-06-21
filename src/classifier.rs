@@ -110,7 +110,7 @@ impl Classifier for Process {
         self.categories.clone()
     }
     fn classify(&mut self, metadata: ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
-        let mut escape_field = |field: Option<String>| match field {
+        let escape_field = |field: Option<String>| match field {
             Some(text) => text.replace(|c| c == '\t' || c == '\n', " "),
             None => String::new(),
         };
@@ -144,52 +144,4 @@ impl Classifier for Process {
     }
 }
 
-/** TestClassifier: stores rules used to determine categories for time spent.
- * Rules are stored in an ordered list.
- * The first matching rule in the list chooses the category.
- * A category can appear in multiple rules.
- */
-pub struct TestClassifier {
-    filters: Vec<(String, Box<Fn(&ActiveWindowMetadata) -> bool>)>,
-}
-impl TestClassifier {
-    /// Create a new classifier with no rules.
-    pub fn new() -> Self {
-        let mut classifier = TestClassifier {
-            filters: Vec::new(),
-        };
-        classifier.append_filter(&"coding", |md| {
-            md.class
-                .as_ref()
-                .map(|class| class == "konsole")
-                .unwrap_or(false)
-        });
-        classifier.append_filter(&"unknown", |_| true);
-        classifier
-    }
-    /// Add a rule at the end of the list, for the given category.
-    fn append_filter<F>(&mut self, category: &str, filter: F)
-    where
-        F: 'static + Fn(&ActiveWindowMetadata) -> bool,
-    {
-        self.filters
-            .push((String::from(category), Box::new(filter)));
-    }
-}
-impl Classifier for TestClassifier {
-    fn categories(&self) -> UniqueCategories {
-        UniqueCategories::make_unique(
-            self.filters
-                .iter()
-                .map(|(category, _)| category.clone())
-                .collect(),
-        )
-    }
-
-    fn classify(&mut self, metadata: ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
-        Ok(self.filters
-            .iter()
-            .find(|(_category, filter)| filter(&metadata))
-            .map(|(category, _filter)| category.clone()))
-    }
-}
+// TODO classifier with simple text matching rules ?

@@ -299,19 +299,19 @@ fn do_main() -> Result<(), ErrorMessage> {
         ));
     }
 
-    let mut classifier = match matches.subcommand() {
+    let mut classifier: Box<Classifier> = match matches.subcommand() {
         ("process", Some(process_args)) => {
             let command_name = process_args.value_of_os("command").unwrap();
             let command_args = process_args.values_of_os("args").unwrap_or_default();
-            classifier::Process::new(command_name, command_args)
-                .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?
+            let classifier = classifier::Process::new(command_name, command_args)
+                .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?;
+            Box::new(classifier)
         }
-        // TODO return box if multiple impls
         _ => panic!("Argument parsing: subcommand is mandatory"),
     };
 
     run_daemon(
-        &mut classifier,
+        classifier.as_mut(),
         Path::new(matches.value_of_os("db_file").unwrap()),
         time::Duration::from_secs(db_write_interval_secs),
         time::Duration::from_secs(time_window_size_secs),
