@@ -234,6 +234,8 @@ fn run_daemon(
 
 fn do_main() -> Result<(), ErrorMessage> {
     let matches = app_from_crate!()
+        .setting(clap::AppSettings::VersionlessSubcommands)
+        .setting(clap::AppSettings::SubcommandRequired)
         .arg(
             clap::Arg::with_name("db_file")
                 .help("Path to database file used to store activity")
@@ -256,6 +258,24 @@ fn do_main() -> Result<(), ErrorMessage> {
                 .value_name("time_secs")
                 .default_value("60"),
         )
+        .subcommand(
+            clap::SubCommand::with_name("process")
+                .about("Classify by using an external subprocess")
+                .after_help(
+                    "Launch a process using the provided program name and arguments.\n\
+                     On every update, the new window metadata is written to the process stdin.\n\
+                     Fields of metadata are on one line, tab separated.\n\
+                     Empty fields are encoded as empty strings (nothing between two tabs).\n\
+                     The initial line sent to the process contains the field names, tab separated.\n\
+                     The process must answer by writing lines to stdout.\n\
+                     It must write an initial line with all possible categories, tab separated.\n\
+                     For each metadata line, it must write a line containing the category name.\n\
+                     An empty line is interpreted as no category, and the duration will be ignored.",
+                )
+                .setting(clap::AppSettings::TrailingVarArg)
+                .arg(clap::Arg::with_name("command").help("Subprocess command").required(true).index(1))
+                .arg(clap::Arg::with_name("args").help("Subprocess arguments").index(2).multiple(true))
+        )
         .get_matches();
 
     let time_window_size_secs = matches
@@ -274,13 +294,20 @@ fn do_main() -> Result<(), ErrorMessage> {
         ));
     }
 
-    // Setup classifier TODO from args
-    let mut classifier = classifier::ExternalProcess::new("./classifier")
-        .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?;
+    let mut classifier = match matches.subcommand() {
+        ("process", Some(process_args)) => {
+            let command_name = process_args.value_of_os("command").unwrap();
+            let command_args = process_args.values_of_os("args").unwrap_or_default();
+            classifier::ExternalProcess::new(command_name, command_args)
+                .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?
+        }
+        // TODO return box if multiple impls
+        _ => panic!("Argument parsing: subcommand is mandatory"),
+    };
 
     run_daemon(
         &mut classifier,
-        Path::new(matches.value_of("db_file").unwrap()),
+        Path::new(matches.value_of_os("db_file").unwrap()),
         time::Duration::from_secs(db_write_interval_secs),
         time::Duration::from_secs(time_window_size_secs),
     )

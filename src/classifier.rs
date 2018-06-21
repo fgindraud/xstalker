@@ -1,5 +1,6 @@
 use super::{ActiveWindowMetadata, ErrorMessage, UniqueCategories};
 use std;
+use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
 use std::process;
 
@@ -34,23 +35,31 @@ pub struct ExternalProcess {
 
 impl ExternalProcess {
     /// Start a subprocess
-    pub fn new(program: &str) -> Result<Self, ErrorMessage> {
-        let mut child = process::Command::new(program)
+    pub fn new<C, I, S>(command: C, args: I) -> Result<Self, ErrorMessage>
+    where
+        C: AsRef<OsStr>,
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let command_name = || command.as_ref().to_string_lossy();
+
+        let mut child = process::Command::new(command.as_ref())
+            .args(args)
             .stdin(process::Stdio::piped())
             .stdout(process::Stdio::piped())
             .spawn()
-            .map_err(|e| ErrorMessage::new(format!("Cannot start subprocess '{}'", program), e))?;
+            .map_err(|e| {
+                ErrorMessage::new(format!("Cannot start subprocess '{}'", command_name()), e)
+            })?;
         // Extract piped IO descriptors
-        let mut stdin =
-            std::mem::replace(&mut child.stdin, None).expect("Child process must have stdin");
-        let stdout =
-            std::mem::replace(&mut child.stdout, None).expect("Child process must have stdout");
+        let mut stdin = std::mem::replace(&mut child.stdin, None).unwrap();
+        let stdout = std::mem::replace(&mut child.stdout, None).unwrap();
+        let mut stdout = BufReader::new(stdout);
         // Send the field names
         stdin
             .write_all(b"title\tclass\n")
             .map_err(|e| ErrorMessage::new("Subprocess: cannot write to stdin", e))?;
         // Get category set from first line, tab separated.
-        let mut stdout = BufReader::new(stdout);
         let categories = {
             let mut line = String::new();
             stdout
