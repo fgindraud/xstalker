@@ -16,12 +16,12 @@ where
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
-// TODO WIP
-
+/// Store line related counts, updated by "processing" lines (read or write).
+/// The goal is to keep track of the offset of the last line of the database file.
 struct LineCounts {
-    last_line_start_offset: usize,
-    last_line_len: usize,
-    line_nb: usize,
+    last_line_start_offset: usize, // byte offset of last processed line
+    last_line_len: usize,          // size of last processed line
+    line_nb: usize,                // index of last processed line
 }
 
 impl LineCounts {
@@ -32,25 +32,32 @@ impl LineCounts {
             line_nb: 0,
         }
     }
+    /// Update counters for processing the next line (read or write)
     fn advance(&mut self, line_len: usize) {
         self.last_line_start_offset += self.last_line_len;
         self.last_line_len = line_len;
         self.line_nb += 1;
     }
+    /// Forget info about last line, do as if there was no last line.
     fn ignore_last_line(&mut self) {
         self.last_line_start_offset += self.last_line_len;
         self.last_line_len = 0;
     }
+    /// Current cursor offset after processing last line.
     fn cursor(&self) -> usize {
         self.last_line_start_offset + self.last_line_len
     }
 }
 
+/// Wrap a file like object with read/write operations that update a LineCounts.
+/// This is used during database parsing to extract the last line offset.
+/// As is it located, the last line can be rewritten when durations are updated.
 struct LineCounted<F> {
     f: F,
     counts: LineCounts,
 }
 
+/// Seek to an offset from start of file.
 fn seek_to_offset<F: Seek>(f: &mut F, offset: usize) -> io::Result<()> {
     f.seek(io::SeekFrom::Start(offset as u64)).map(|_| ())
 }
@@ -63,7 +70,7 @@ impl<F: Seek> LineCounted<F> {
             counts: LineCounts::new(),
         }
     }
-    /// Wrap file, resetting its cursor
+    /// Wrap file, resetting its cursor to start.
     fn reset_file(mut f: F) -> io::Result<Self> {
         seek_to_offset(&mut f, 0)?;
         Ok(LineCounted::new(f))
@@ -73,7 +80,7 @@ impl<F: Seek> LineCounted<F> {
         self.f
     }
 
-    /// Read a line. Stores content into buf.
+    /// Wraps BufRead::read_line(), update counts. Does not append to buf, just stores.
     fn read_line(&mut self, buf: &mut String) -> io::Result<()>
     where
         F: BufRead,
@@ -83,7 +90,8 @@ impl<F: Seek> LineCounted<F> {
         self.counts.advance(line_len);
         Ok(())
     }
-    /// Write data as a line (should end with \n, not appended).
+    /// Write buf as one line, updating counters.
+    /// Data must end with \n. This is not checked.
     fn write_line(&mut self, line: &[u8]) -> io::Result<()>
     where
         F: Write,
@@ -94,29 +102,9 @@ impl<F: Seek> LineCounted<F> {
     }
 
     // TODO if BufWrite writer for Iter<Item=&str>
-
-    /// Read from last line to end of file.
-    /// Does not change counts.
-    fn read_from_last_line(&mut self, buf: &mut String) -> io::Result<()>
-    where
-        F: Read,
-    {
-        seek_to_offset(&mut self.f, self.counts.last_line_start_offset)?;
-        self.f.read_to_string(buf).map(|_| ())
-    }
-}
-impl LineCounted<File> {
-    /// Rewrite last line content.
-    fn rewrite_last_line(&mut self, line: &[u8]) -> io::Result<()> {
-        seek_to_offset(&mut self.f, self.counts.last_line_start_offset)?;
-        self.f.write_all(line)?;
-        self.counts.last_line_len = line.len();
-        self.f.set_len(self.counts.cursor() as u64)?; // Trim file len
-        self.f.sync_all() // May be costly, but we do not call that often...
-    }
 }
 impl<F: Read + Seek> LineCounted<BufReader<F>> {
-    /// Unwrap the BufReader object, keeping the counts
+    /// Unwrap a BufReader object, keeping the counts
     fn unbuffered(self) -> io::Result<LineCounted<F>> {
         // Seek to tracked cursor, as BufReader may have read further
         let mut f = self.f.into_inner();
@@ -128,12 +116,31 @@ impl<F: Read + Seek> LineCounted<BufReader<F>> {
     }
 }
 impl<F: Write> LineCounted<BufWriter<F>> {
-    /// Unwrap the BufWriter object, keeping the counts
+    /// Unwrap a BufWriter object, keeping the counts
     fn unbuffered(self) -> io::Result<LineCounted<F>> {
         Ok(LineCounted {
             f: self.f.into_inner()?,
             counts: self.counts,
         })
+    }
+}
+
+/// Database specific last line manipulation.
+impl LineCounted<File> {
+    /// Read from last line to end of file. Counts are unchanged.
+    /// If file was previously read to end, this exactly reads the last line content.
+    fn read_from_last_line(&mut self, buf: &mut String) -> io::Result<()> {
+        seek_to_offset(&mut self.f, self.counts.last_line_start_offset)?;
+        self.f.read_to_string(buf).map(|_| ())
+    }
+
+    /// Rewrite last line content. Counts updated as if writing last line.
+    fn rewrite_last_line(&mut self, line: &[u8]) -> io::Result<()> {
+        seek_to_offset(&mut self.f, self.counts.last_line_start_offset)?;
+        self.f.write_all(line)?;
+        self.counts.last_line_len = line.len();
+        self.f.set_len(self.counts.cursor() as u64)?; // Trim file len
+        self.f.sync_all() // May be costly, but we do not call that often...
     }
 }
 
@@ -146,6 +153,10 @@ impl<F: Write> LineCounted<BufWriter<F>> {
  * The next columns represent the time spent in each category, in seconds (integer).
  * The header line contain the category name for each columns.
  * Each category must be uniquely named.
+ *
+ * The Database is supposed to be written to disk often, to avoid data loss.
+ * This is done by rewriting the last entry, except when the time window changes (new entry).
+ * Rewriting the last entry is done using LineCounted, which tracks last line position.
  */
 pub struct Database {
     file: LineCounted<File>,
@@ -180,7 +191,7 @@ impl Database {
                     let mut reader = reader.into_inner(); // Destroy counts
                     let mut entry_lines = String::new();
                     reader.read_to_string(&mut entry_lines)?;
-                    // Rewrite file TODO scan ?
+                    // Rewrite file TODO scan ? better impl ?
                     let entry_suffix: String = std::iter::repeat("\t0")
                         .take(nb_missing_categories)
                         .collect();
