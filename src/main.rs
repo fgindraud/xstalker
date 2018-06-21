@@ -171,7 +171,7 @@ fn run_daemon(
         let (initial_metadata, timestamp) = active_window_changes
             .get_current_metadata()
             .map_err(|e| ErrorMessage::new("Unable to get window metadata", e))?;
-        let initial_category = classifier.classify(&initial_metadata)?;
+        let initial_category = classifier.classify(initial_metadata)?;
         duration_counter.category_changed(initial_category, timestamp);
     }
 
@@ -185,7 +185,7 @@ fn run_daemon(
         .map_err(|e| ErrorMessage::new("Window metadata listener failed", e))
         .for_each(|(active_window_metadata, timestamp)| {
             println!("task_handle_window_change");
-            let category = classifier.classify(&active_window_metadata)?;
+            let category = classifier.classify(active_window_metadata)?;
             duration_counter
                 .borrow_mut()
                 .category_changed(category, timestamp);

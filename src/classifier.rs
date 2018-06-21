@@ -10,8 +10,7 @@ pub trait Classifier {
 
     /// Returns the category name for the metadata, or None if not matched.
     /// The category must be in the set returned by categories().
-    fn classify(&mut self, metadata: &ActiveWindowMetadata)
-        -> Result<Option<String>, ErrorMessage>;
+    fn classify(&mut self, metadata: ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage>;
 }
 
 /** Classify using an external process.
@@ -87,6 +86,7 @@ impl Process {
          On every update, the new window metadata is written to the process stdin.\n\
          Fields of metadata are on one line, tab separated.\n\
          Empty fields are encoded as empty strings (nothing between two tabs).\n\
+         Each tab or newline in metadata field are converted to spaces.\n\
          The initial line sent to the process contains the field names, tab separated.\n\
          \n\
          The process must answer by writing lines to stdout.\n\
@@ -94,7 +94,9 @@ impl Process {
          For each metadata line, it must write a line containing the category name.\n\
          An empty line is interpreted as no category, and the duration will be ignored.\n\
          \n\
-         IMPORTANT: The classifier must output lines without buffering, or xstalker will be blocked."
+         IMPORTANT:\n\
+         The classifier must output lines without buffering, or xstalker will be blocked.\n\
+         Category names must not contain tabs or newlines."
     }
 }
 impl Drop for Process {
@@ -107,15 +109,15 @@ impl Classifier for Process {
     fn categories(&self) -> UniqueCategories {
         self.categories.clone()
     }
-    fn classify(
-        &mut self,
-        metadata: &ActiveWindowMetadata,
-    ) -> Result<Option<String>, ErrorMessage> {
-        // Send metadata TODO what if \t in metadata ?
+    fn classify(&mut self, metadata: ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
+        let mut escape_field = |field: Option<String>| match field {
+            Some(text) => text.replace(|c| c == '\t' || c == '\n', " "),
+            None => String::new(),
+        };
         let metadata = format!(
             "{}\t{}\n",
-            metadata.title.as_ref().map_or("", |s| s.as_str()),
-            metadata.class.as_ref().map_or("", |s| s.as_str())
+            escape_field(metadata.title),
+            escape_field(metadata.class)
         );
         Process::stdin(&mut self.child)
             .write_all(metadata.as_bytes())
@@ -184,13 +186,10 @@ impl Classifier for TestClassifier {
         )
     }
 
-    fn classify(
-        &mut self,
-        metadata: &ActiveWindowMetadata,
-    ) -> Result<Option<String>, ErrorMessage> {
+    fn classify(&mut self, metadata: ActiveWindowMetadata) -> Result<Option<String>, ErrorMessage> {
         Ok(self.filters
             .iter()
-            .find(|(_category, filter)| filter(metadata))
+            .find(|(_category, filter)| filter(&metadata))
             .map(|(category, _filter)| category.clone()))
     }
 }
