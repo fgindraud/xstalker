@@ -4,7 +4,7 @@ use std;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, Read, Seek, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, Write};
 use std::path::Path;
 use std::time;
 
@@ -17,18 +17,123 @@ where
 }
 
 // TODO WIP
-struct LineCounted<F> {
+
+struct LineCounts {
     last_line_start_offset: usize,
     last_line_len: usize,
-    f: F,
+    line_nb: usize,
 }
-impl<F> LineCounted<F> {
-    fn new(f: F) -> Self {
-        LineCounted {
+
+impl LineCounts {
+    fn new() -> Self {
+        LineCounts {
             last_line_start_offset: 0,
             last_line_len: 0,
-            f: f,
+            line_nb: 0,
         }
+    }
+    fn advance(&mut self, line_len: usize) {
+        self.last_line_start_offset += self.last_line_len;
+        self.last_line_len = line_len;
+        self.line_nb += 1;
+    }
+    fn ignore_last_line(&mut self) {
+        self.last_line_start_offset += self.last_line_len;
+        self.last_line_len = 0;
+    }
+    fn cursor(&self) -> usize {
+        self.last_line_start_offset + self.last_line_len
+    }
+}
+
+struct LineCounted<F> {
+    f: F,
+    counts: LineCounts,
+}
+
+fn seek_to_offset<F: Seek>(f: &mut F, offset: usize) -> io::Result<()> {
+    f.seek(io::SeekFrom::Start(offset as u64)).map(|_| ())
+}
+
+impl<F: Seek> LineCounted<F> {
+    /// Wrap file, assuming its cursor is at the start
+    fn new(f: F) -> Self {
+        LineCounted {
+            f: f,
+            counts: LineCounts::new(),
+        }
+    }
+    /// Wrap file, resetting its cursor
+    fn reset_file(mut f: F) -> io::Result<Self> {
+        seek_to_offset(&mut f, 0)?;
+        Ok(LineCounted::new(f))
+    }
+    /// Unwraps inner file object
+    fn into_inner(self) -> F {
+        self.f
+    }
+
+    /// Read a line. Stores content into buf.
+    fn read_line(&mut self, buf: &mut String) -> io::Result<()>
+    where
+        F: BufRead,
+    {
+        buf.clear(); // BufRead read_line appends, remove old content
+        let line_len = self.f.read_line(buf)?;
+        self.counts.advance(line_len);
+        Ok(())
+    }
+    /// Write data as a line (should end with \n, not appended).
+    fn write_line(&mut self, line: &[u8]) -> io::Result<()>
+    where
+        F: Write,
+    {
+        self.f.write_all(line)?;
+        self.counts.advance(line.len());
+        Ok(())
+    }
+
+    // TODO if BufWrite writer for Iter<Item=&str>
+
+    /// Read from last line to end of file.
+    /// Does not change counts.
+    fn read_from_last_line(&mut self, buf: &mut String) -> io::Result<()>
+    where
+        F: Read,
+    {
+        seek_to_offset(&mut self.f, self.counts.last_line_start_offset)?;
+        self.f.read_to_string(buf).map(|_| ())
+    }
+}
+impl LineCounted<File> {
+    /// Rewrite last line content.
+    fn rewrite_last_line(&mut self, line: &[u8]) -> io::Result<()> {
+        seek_to_offset(&mut self.f, self.counts.last_line_start_offset)?;
+        self.f.write_all(line)?;
+        self.counts.last_line_len = line.len();
+        self.f.set_len(self.counts.cursor() as u64)?; // Trim file len
+        self.f.sync_all() // May be costly, but we do not call that often...
+    }
+}
+impl<F: Read + Seek> LineCounted<BufReader<F>> {
+    /// Unwrap the BufReader object, keeping the counts
+    fn unbuffered(self) -> io::Result<LineCounted<F>> {
+        // Seek to tracked cursor, as BufReader may have read further
+        let mut f = self.f.into_inner();
+        seek_to_offset(&mut f, self.counts.cursor())?;
+        Ok(LineCounted {
+            f: f,
+            counts: self.counts,
+        })
+    }
+}
+impl<F: Write> LineCounted<BufWriter<F>> {
+    /// Unwrap the BufWriter object, keeping the counts
+    fn unbuffered(self) -> io::Result<LineCounted<F>> {
+        Ok(LineCounted {
+            f: self.f.into_inner()?,
+            counts: self.counts,
+        })
     }
 }
 
@@ -43,9 +148,7 @@ impl<F> LineCounted<F> {
  * Each category must be uniquely named.
  */
 pub struct Database {
-    file: File,
-    last_line_start_offset: usize,
-    file_len: usize,
+    file: LineCounted<File>,
     categories: UniqueCategories,
 }
 
@@ -61,35 +164,37 @@ impl Database {
     pub fn open(path: &Path, classifier_categories: UniqueCategories) -> io::Result<Self> {
         match fs::OpenOptions::new().read(true).write(true).open(path) {
             Ok(f) => {
-                let mut reader = io::BufReader::new(f);
-                let (mut db_categories, header_len) = Database::parse_categories(&mut reader)?;
+                let mut reader = LineCounted::new(BufReader::new(f));
+                let mut db_categories = Database::parse_categories(&mut reader)?;
                 let nb_missing_categories = db_categories.extend(classifier_categories);
-                if nb_missing_categories > 0 {
+                if nb_missing_categories == 0 {
                     // Can reuse the database as it is
-                    let (last_line_start_offset, file_len) =
-                        Database::scan_db_entries(&mut reader, header_len, db_categories.len())?;
+                    reader.counts.ignore_last_line(); // Skip header
+                    Database::scan_entries(&mut reader, db_categories.len())?;
                     Ok(Database {
-                        file: reader.into_inner(),
-                        last_line_start_offset: last_line_start_offset,
-                        file_len: file_len,
+                        file: reader.unbuffered()?,
                         categories: db_categories,
                     })
                 } else {
                     // Put file content in memory
+                    let mut reader = reader.into_inner(); // Destroy counts
                     let mut entry_lines = String::new();
                     reader.read_to_string(&mut entry_lines)?;
-                    // Rewrite file
+                    // Rewrite file TODO scan ?
                     let entry_suffix: String = std::iter::repeat("\t0")
                         .take(nb_missing_categories)
                         .collect();
-                    let mut writer = io::BufWriter::new(reader.into_inner());
-                    writer.seek(io::SeekFrom::Start(0))?;
-                    write!(writer, "time_window\t{}\n", db_categories.join("\t"))?;
+                    let mut writer = LineCounted::reset_file(BufWriter::new(reader.into_inner()))?;
+                    writer.write_line(
+                        format!("time_window\t{}\n", db_categories.join("\t")).as_bytes(),
+                    )?;
                     for entry in entry_lines.lines() {
-                        write!(writer, "{}{}\n", entry, entry_suffix)?;
+                        writer.write_line(format!("{}{}\n", entry, entry_suffix).as_bytes())?;
                     }
-
-                    unimplemented!()
+                    Ok(Database {
+                        file: writer.unbuffered()?,
+                        categories: db_categories,
+                    })
                 }
             }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
@@ -106,17 +211,16 @@ impl Database {
         if let Some(dir) = path.parent() {
             fs::DirBuilder::new().recursive(true).create(dir)?
         }
-        let mut f = fs::OpenOptions::new()
+        let f = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(path)?;
-        let header = format!("time_window\t{}\n", classifier_categories.join("\t"));
-        f.write_all(header.as_bytes())?;
+        let mut f = LineCounted::new(f);
+        f.write_line(format!("time_window\t{}\n", classifier_categories.join("\t")).as_bytes())?;
+        f.counts.ignore_last_line(); // Skip header
         Ok(Database {
             file: f,
-            last_line_start_offset: header.len(),
-            file_len: header.len(),
             categories: classifier_categories,
         })
     }
@@ -127,65 +231,56 @@ impl Database {
     }
 
     /// Parse header line, return categories and header line len.
-    fn parse_categories(reader: &mut io::BufReader<File>) -> io::Result<(UniqueCategories, usize)> {
+    fn parse_categories(reader: &mut LineCounted<BufReader<File>>) -> io::Result<UniqueCategories> {
         let mut header = String::new();
-        let header_len = reader.read_line(&mut header)?;
+        reader.read_line(&mut header)?;
         // Line must exist, must be '\n'-terminated, must contain at least 'time' header.
-        if header_len == 0 {
-            return Err(bad_data("No header line"));
-        }
-        if header.pop() != Some('\n') {
-            return Err(bad_data("Header line is not newline terminated"));
-        }
-        let mut elements = header.split('\t');
-        if let Some(_time_header) = elements.next() {
-            match UniqueCategories::from_unique(elements.map(|s| s.into()).collect()) {
-                Ok(categories) => Ok((categories, header_len)),
-                Err(e) => Err(bad_data(e)),
+        match header.pop() {
+            Some('\n') => {
+                let mut elements = header.split('\t');
+                match elements.next() {
+                    Some(_time_header) => UniqueCategories::from_unique(
+                        elements.map(|s| s.into()).collect(),
+                    ).map_err(|e| bad_data(e)),
+                    None => Err(bad_data("Header has no field")),
+                }
             }
-        } else {
-            Err(bad_data("Header has no field"))
+            None => Err(bad_data("No header line")),
+            _ => Err(bad_data("Header line is not newline terminated")),
         }
     }
 
-    /** Check db entries, return (last_line_start_offset, file_len)
-     * Assume reader cursor is at start of second line.
-     */
-    fn scan_db_entries(
-        reader: &mut io::BufReader<File>,
-        header_len: usize,
+    /// Check db entries. Assume reader cursor is at first entry line.
+    fn scan_entries(
+        reader: &mut LineCounted<BufReader<File>>,
         nb_categories: usize,
-    ) -> io::Result<(usize, usize)> {
+    ) -> io::Result<()> {
         let mut line = String::new();
-        let mut line_nb = 2; // Start at line 2
-        let mut offset = header_len;
-        let mut prev_line_len = 0;
         loop {
-            let line_len = reader.read_line(&mut line)?;
+            reader.read_line(&mut line)?;
             // Entry line must be either empty, or be '\n'-terminated and have the right fields
-            if line_len == 0 {
-                return Ok((offset, offset + prev_line_len));
+            match line.pop() {
+                Some('\n') => {
+                    // Check field count
+                    let nb_fields = line.split('\t').count();
+                    if nb_fields != nb_categories + 1 {
+                        return Err(bad_data(format!(
+                            "Line {}: expected {} fields, got {}: {:?}",
+                            reader.counts.line_nb + 1,
+                            nb_categories + 1,
+                            nb_fields,
+                            line
+                        )));
+                    }
+                }
+                None => return Ok(()), // Empty last line
+                _ => {
+                    return Err(bad_data(format!(
+                        "Line {}: Not newline terminated",
+                        reader.counts.line_nb + 1
+                    )))
+                }
             }
-            if line.pop() != Some('\n') {
-                return Err(bad_data(format!(
-                    "Line {}: Not newline terminated",
-                    line_nb
-                )));
-            }
-            let nb_fields = line.split('\t').count();
-            if nb_fields != nb_categories + 1 {
-                return Err(bad_data(format!(
-                    "Line {}: expected {} fields, got {}: {:?}",
-                    line_nb,
-                    nb_categories + 1,
-                    nb_fields,
-                    line
-                )));
-            }
-            line.clear(); // Reset buffer for next line (read_line appends content)
-            line_nb += 1;
-            offset += prev_line_len;
-            prev_line_len = line_len;
         }
     }
 
@@ -195,40 +290,40 @@ impl Database {
      * If entry is incorrect: error.
      */
     pub fn get_last_entry(&mut self) -> io::Result<Option<(DatabaseTime, Vec<time::Duration>)>> {
-        self.file
-            .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
         let mut line = String::new();
-        let line_len = self.file.read_to_string(&mut line)?;
-        if line_len == 0 {
-            // Empty database is ok.
-            return Ok(None);
-        }
+        self.file.read_from_last_line(&mut line)?;
+
         // If line exists, it must be '\n'-terminated, must contain time + categories durations
-        if line.pop() != Some('\n') {
-            return Err(bad_data("Entry is not newline terminated"));
-        }
-        let mut elements = line.split('\t');
-        if let Some(time_window_text) = elements.next() {
-            let time_window: DatabaseTime = time_window_text
-                .parse()
-                .map_err(|err| bad_data(format!("Cannot parse time window: {}", err)))?;
-            // Read durations of entry
-            let mut durations = Vec::with_capacity(self.categories.len());
-            for s in elements {
-                let seconds: u64 = s.parse()
-                    .map_err(|err| bad_data(format!("Cannot parse category duration: {}", err)))?;
-                durations.push(time::Duration::from_secs(seconds))
+        match line.pop() {
+            Some('\n') => {
+                let mut elements = line.split('\t');
+                match elements.next() {
+                    Some(time_window_text) => {
+                        let time_window: DatabaseTime = time_window_text
+                            .parse()
+                            .map_err(|err| bad_data(format!("Cannot parse time window: {}", err)))?;
+                        // Read durations of entry
+                        let mut durations = Vec::with_capacity(self.categories.len());
+                        for s in elements {
+                            let seconds: u64 = s.parse().map_err(|err| {
+                                bad_data(format!("Cannot parse category duration: {}", err))
+                            })?;
+                            durations.push(time::Duration::from_secs(seconds))
+                        }
+                        if durations.len() != self.categories.len() {
+                            return Err(bad_data(format!(
+                                "Durations: expected {} fields, got {}",
+                                self.categories.len(),
+                                durations.len()
+                            )));
+                        }
+                        Ok(Some((time_window, durations)))
+                    }
+                    None => Err(bad_data("Entry is empty")),
+                }
             }
-            if durations.len() != self.categories.len() {
-                return Err(bad_data(format!(
-                    "Durations: expected {} fields, got {}",
-                    self.categories.len(),
-                    durations.len()
-                )));
-            }
-            Ok(Some((time_window, durations)))
-        } else {
-            Err(bad_data("Entry is empty"))
+            None => Ok(None), // Empty database
+            _ => Err(bad_data("Entry is not newline terminated")),
         }
     }
 
@@ -245,18 +340,12 @@ impl Database {
             write!(&mut line, "\t{}", d.as_secs()).unwrap();
         }
         line.push('\n');
-        // Write line to end of file, removing any excess data
-        self.file
-            .seek(io::SeekFrom::Start(self.last_line_start_offset as u64))?;
-        self.file.write_all(line.as_bytes())?;
-        self.file_len = self.last_line_start_offset + line.len();
-        self.file.set_len(self.file_len as u64)?;
-        self.file.sync_all() // May be costly, but we do not call that often...
+        self.file.rewrite_last_line(line.as_bytes())
     }
 
     /// Move the last line cursor to the next line, locking the current last line content.
     pub fn lock_last_entry(&mut self) {
-        self.last_line_start_offset = self.file_len
+        self.file.counts.ignore_last_line()
     }
 }
 
