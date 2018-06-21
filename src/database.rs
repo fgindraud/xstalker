@@ -245,7 +245,7 @@ impl Database {
  */
 pub struct CategoryDurationCounter {
     current_category_index: Option<usize>, // Index for categories / durations
-    last_category_update: time::Instant,
+    last_recorded: time::Instant,          // Last time where durations were stored in durations vec
     categories: UniqueCategories,
     durations: Vec<time::Duration>,
 }
@@ -261,7 +261,7 @@ impl CategoryDurationCounter {
             .collect();
         CategoryDurationCounter {
             current_category_index: None,
-            last_category_update: time::Instant::now(),
+            last_recorded: time::Instant::now(),
             categories: categories,
             durations: zeroed_durations,
         }
@@ -285,14 +285,20 @@ impl CategoryDurationCounter {
         }
     }
 
+    /// Record duration for current category from last_recorded to timestamp.
+    pub fn record_current_duration(&mut self, timestamp: time::Instant) {
+        if let Some(index) = self.current_category_index {
+            self.durations[index] += timestamp.duration_since(self.last_recorded)
+        }
+        self.last_recorded = timestamp;
+    }
+
     /** Record a change in active window.
-     * Duration for the previous category is accumulated to the table, if not undefined.
+     * Store durations for the previous category up to now, then changes current category.
      * Assumes that the category name is in the set given to new().
      */
     pub fn category_changed(&mut self, category: Option<String>, timestamp: time::Instant) {
-        if let Some(index) = self.current_category_index {
-            self.durations[index] += timestamp.duration_since(self.last_category_update)
-        }
+        self.record_current_duration(timestamp);
         self.current_category_index = category.map(|ref s| {
             self.categories
                 .iter()
@@ -301,6 +307,5 @@ impl CategoryDurationCounter {
                 .expect("category name is unknown")
                 .0
         });
-        self.last_category_update = timestamp
     }
 }

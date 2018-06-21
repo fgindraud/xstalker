@@ -103,9 +103,11 @@ use xcb_stalker::ActiveWindowChanges;
 
 fn write_durations_to_disk(
     db: &mut Database,
-    duration_counter: &CategoryDurationCounter,
+    duration_counter: &mut CategoryDurationCounter,
     window_start: &DatabaseTime,
+    timestamp: time::Instant,
 ) -> io::Result<()> {
+    duration_counter.record_current_duration(timestamp);
     db.rewrite_last_entry(window_start, duration_counter.durations())
 }
 
@@ -114,9 +116,10 @@ fn change_time_window(
     duration_counter: &mut CategoryDurationCounter,
     window_start: &mut DatabaseTime,
     time_window_size: time::Duration,
+    timestamp: time::Instant,
 ) -> io::Result<()> {
     // Flush current durations values
-    write_durations_to_disk(db, duration_counter, window_start)?;
+    write_durations_to_disk(db, duration_counter, window_start, timestamp)?;
     // Create a new time window
     db.lock_last_entry();
     duration_counter.reset_durations();
@@ -193,12 +196,13 @@ fn run_daemon(
     let all_db_writes =
         tokio::timer::Interval::new(time::Instant::now() + db_write_interval, db_write_interval)
             .map_err(|e| ErrorMessage::new("Timer error", e))
-            .for_each(|_instant| {
+            .for_each(|instant| {
                 println!("task_write_db");
                 write_durations_to_disk(
                     &mut db.borrow_mut(),
-                    &duration_counter.borrow(),
+                    &mut duration_counter.borrow_mut(),
                     &window_start.borrow(),
+                    instant,
                 ).map_err(|e| {
                     ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e)
                 })
@@ -209,13 +213,14 @@ fn run_daemon(
         time::Instant::now() + duration_to_next_window_change,
         time_window_size,
     ).map_err(|e| ErrorMessage::new("Timer error", e))
-        .for_each(|_instant| {
+        .for_each(|instant| {
             println!("task_new_time_window");
             change_time_window(
                 &mut db.borrow_mut(),
                 &mut duration_counter.borrow_mut(),
                 &mut window_start.borrow_mut(),
                 time_window_size,
+                instant,
             ).map_err(|e| {
                 ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e)
             })
@@ -224,7 +229,6 @@ fn run_daemon(
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
     // TODO support signals using tokio_signal crate ?
-    // TODO log durations on db writes
     let mut runtime = tokio::runtime::current_thread::Runtime::new()
         .map_err(|e| ErrorMessage::new("Unable to create tokio runtime", e))?;
     runtime
