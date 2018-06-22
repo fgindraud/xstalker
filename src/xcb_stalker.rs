@@ -18,8 +18,8 @@ pub use super::ActiveWindowMetadata;
 struct Stalker {
     connection: xcb::Connection,
     root_window: xcb::Window,
-    non_static_atoms: NonStaticAtoms,
-}
+    non_static_atoms: NonStaticAtoms, // TODO add current_active_window : Option<xcb:Window>
+} //TODO active_window_change(Opt<window>): deregisters, reregisters events
 
 /// Store non static useful atoms (impl detail of Stalker).
 struct NonStaticAtoms {
@@ -62,7 +62,7 @@ impl Stalker {
         };
 
         // Get useful non static atoms for later.
-        let non_static_atoms = NonStaticAtoms::new(&conn)?;
+        let non_static_atoms = NonStaticAtoms::read_from_conn(&conn)?;
 
         // Listen to property changes for root window.
         // This is where the active window property is maintained.
@@ -177,7 +177,7 @@ impl Stalker {
 
 impl NonStaticAtoms {
     /// Get values from server
-    fn new(conn: &xcb::Connection) -> io::Result<Self> {
+    fn read_from_conn(conn: &xcb::Connection) -> io::Result<Self> {
         let to_error = |_| io::Error::new(io::ErrorKind::Other, "xcb_intern_atom");
         let active_window_cookie = xcb::intern_atom(&conn, true, "_NET_ACTIVE_WINDOW");
         let utf8_string_cookie = xcb::intern_atom(&conn, true, "UTF8_STRING");
@@ -192,7 +192,6 @@ impl NonStaticAtoms {
 
 impl<'a> GetTextPropertyCookie<'a> {
     /// Retrieve the text property as a String, or None if error.
-    /// TODO better handling of unknown atom ? warning ?
     fn get_reply(&self) -> Option<String> {
         if let Ok(reply) = self.cookie.get_reply() {
             if reply.format() == 8 && reply.bytes_after() == 0 && reply.value_len() > 0 {
