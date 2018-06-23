@@ -90,7 +90,6 @@ fn disable_property_change_notifications(connection: &xcb::Connection, w: xcb::W
     xcb::change_window_attributes(connection, w, &values);
 }
 
-// TODO look for changes of property on active window !
 impl Stalker {
     /// Create and configure a new listener.
     fn new() -> io::Result<Self> {
@@ -105,9 +104,10 @@ impl Stalker {
         // Get useful non static atoms for later.
         let non_static_atoms = NonStaticAtoms::read_from_conn(&conn)?;
 
-        // Get active window, and listen to its property changes
         let active_window = get_active_window(&conn, root_window, non_static_atoms.active_window)?;
-        // (TODO enable later)enable_property_change_notifications(&conn, active_window);
+
+        // Listen to its title changes
+        enable_property_change_notifications(&conn, active_window);
 
         // Listen to property changes for root window.
         // This is where the active window property is maintained.
@@ -153,6 +153,7 @@ impl Stalker {
     /// Return true if the active window metadata has changed, and must be queried again.
     fn process_events(&mut self) -> io::Result<bool> {
         let mut active_window_changed = false;
+        let mut active_window_title_changed = false;
         // Process all events, gather changes.
         while let Some(event) = self.connection.poll_for_event() {
             let rt = event.response_type();
@@ -165,17 +166,32 @@ impl Stalker {
                     println!("DEBUG: prop change active_window on root");
                     active_window_changed = true;
                 }
+                if event.window() == self.current_active_window && event.atom() == xcb::ATOM_WM_NAME
+                    && event.state() == xcb::PROPERTY_NEW_VALUE as u8
+                {
+                    println!("DEBUG: prop change title on active_window");
+                    active_window_title_changed = true;
+                }
             }
         }
         // Get new active window
         if active_window_changed {
             let new_active_window = self.get_active_window()?;
             if new_active_window != self.current_active_window {
+                if self.current_active_window != self.root_window {
+                    // We do not want to disable notifications for root !
+                    disable_property_change_notifications(
+                        &self.connection,
+                        self.current_active_window,
+                    )
+                }
+                enable_property_change_notifications(&self.connection, new_active_window);
                 self.current_active_window = new_active_window;
                 return Ok(true);
             }
         }
-        Ok(false)
+        // Active window did not actually change. Check if active window title changed.
+        Ok(active_window_title_changed)
     }
 
     // Short wrappers
