@@ -18,20 +18,15 @@ pub use super::ActiveWindowMetadata;
 struct Stalker {
     connection: xcb::Connection,
     root_window: xcb::Window,
-    non_static_atoms: NonStaticAtoms, // TODO add current_active_window : Option<xcb:Window>
-} //TODO active_window_change(Opt<window>): deregisters, reregisters events
+    non_static_atoms: NonStaticAtoms,
+    current_active_window: xcb::Window,
+}
 
 /// Store non static useful atoms (impl detail of Stalker).
 struct NonStaticAtoms {
     active_window: xcb::Atom,
     utf8_string: xcb::Atom,
     compound_text: xcb::Atom,
-}
-
-/// Ongoing request for a text property (impl detail of Stalker).
-struct GetTextPropertyCookie<'a> {
-    cookie: xcb::GetPropertyCookie<'a>,
-    non_static_atoms: &'a NonStaticAtoms,
 }
 
 fn conn_to_io_error(err: xcb::ConnError) -> io::Error {
@@ -49,6 +44,52 @@ fn conn_to_io_error(err: xcb::ConnError) -> io::Error {
     }
 }
 
+/// Get active window id. Error if not found.
+fn get_active_window(
+    connection: &xcb::Connection,
+    root_window: xcb::Window,
+    active_window_atom: xcb::Atom,
+) -> io::Result<xcb::Window> {
+    let cookie = xcb::get_property(
+        connection,
+        false,
+        root_window,
+        active_window_atom,
+        xcb::ATOM_WINDOW,
+        0,
+        (std::mem::size_of::<xcb::Window>() / 4) as u32,
+    );
+    match &cookie.get_reply() {
+        Ok(reply)
+            if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
+                && reply.value_len() == 1 && reply.format() == 32 =>
+        {
+            // Not pretty. Assumes that xcb::Window is an u32
+            let buf: &[xcb::Window] = reply.value();
+            Ok(buf[0])
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "xcb_get_property(active_window): invalid reply",
+        )),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "xcb_get_property(active_window): failure",
+        )),
+    }
+}
+
+/// Enable notifications for property changes on window w
+fn enable_property_change_notifications(connection: &xcb::Connection, w: xcb::Window) {
+    let values = [(xcb::CW_EVENT_MASK, xcb::EVENT_MASK_PROPERTY_CHANGE)];
+    xcb::change_window_attributes(connection, w, &values);
+}
+/// Disable notifications for property changes on window w
+fn disable_property_change_notifications(connection: &xcb::Connection, w: xcb::Window) {
+    let values = [(xcb::CW_EVENT_MASK, xcb::NONE)];
+    xcb::change_window_attributes(connection, w, &values);
+}
+
 // TODO look for changes of property on active window !
 impl Stalker {
     /// Create and configure a new listener.
@@ -64,10 +105,14 @@ impl Stalker {
         // Get useful non static atoms for later.
         let non_static_atoms = NonStaticAtoms::read_from_conn(&conn)?;
 
+        // Get active window, and listen to its property changes
+        let active_window = get_active_window(&conn, root_window, non_static_atoms.active_window)?;
+        // (TODO enable later)enable_property_change_notifications(&conn, active_window);
+
         // Listen to property changes for root window.
         // This is where the active window property is maintained.
-        let values = [(xcb::CW_EVENT_MASK, xcb::EVENT_MASK_PROPERTY_CHANGE)];
-        xcb::change_window_attributes(&conn, root_window, &values);
+        enable_property_change_notifications(&conn, root_window);
+
         conn.flush();
         conn.has_error().map_err(conn_to_io_error)?;
 
@@ -75,16 +120,17 @@ impl Stalker {
             connection: conn,
             root_window: root_window,
             non_static_atoms: non_static_atoms,
+            current_active_window: active_window,
         })
     }
 
     /// Get the current active window metadata, and timestamp of change.
     fn get_active_window_metadata(&self) -> io::Result<(ActiveWindowMetadata, time::Instant)> {
+        // Timestamp from xcb is unusable
         let timestamp = time::Instant::now();
-        let w = self.get_active_window()?;
         // Requests
-        let title = self.get_text_property(w, xcb::ATOM_WM_NAME);
-        let class = self.get_text_property(w, xcb::ATOM_WM_CLASS);
+        let title = self.get_text_property(self.current_active_window, xcb::ATOM_WM_NAME);
+        let class = self.get_text_property(self.current_active_window, xcb::ATOM_WM_CLASS);
         // Process replies
         let title = title.get_reply();
         let class = class.get_reply().map(|mut text| match text.find('\0') {
@@ -103,10 +149,11 @@ impl Stalker {
         ))
     }
 
-    /// Process all pending events.
+    /// Process all pending events, update cached data (active_window).
     /// Return true if the active window metadata has changed, and must be queried again.
-    fn process_events(&self) -> bool {
+    fn process_events(&mut self) -> io::Result<bool> {
         let mut active_window_changed = false;
+        // Process all events, gather changes.
         while let Some(event) = self.connection.poll_for_event() {
             let rt = event.response_type();
             if rt == xcb::PROPERTY_NOTIFY {
@@ -115,63 +162,36 @@ impl Stalker {
                     && event.atom() == self.non_static_atoms.active_window
                     && event.state() == xcb::PROPERTY_NEW_VALUE as u8
                 {
+                    println!("DEBUG: prop change active_window on root");
                     active_window_changed = true;
                 }
             }
         }
-        active_window_changed
+        // Get new active window
+        if active_window_changed {
+            let new_active_window = self.get_active_window()?;
+            if new_active_window != self.current_active_window {
+                self.current_active_window = new_active_window;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
-    /// Impl detail: get active window id.
-    /// Not finding the property is an error.
+    // Short wrappers
     fn get_active_window(&self) -> io::Result<xcb::Window> {
-        let cookie = xcb::get_property(
+        get_active_window(
             &self.connection,
-            false,
             self.root_window,
             self.non_static_atoms.active_window,
-            xcb::ATOM_WINDOW,
-            0,
-            (std::mem::size_of::<xcb::Window>() / 4) as u32,
-        );
-        match &cookie.get_reply() {
-            Ok(reply)
-                if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
-                    && reply.value_len() == 1 && reply.format() == 32 =>
-            {
-                // Not pretty. Assumes that xcb::Window is an u32
-                let buf: &[xcb::Window] = reply.value();
-                Ok(buf[0])
-            }
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                "xcb_get_property(active_window): invalid reply",
-            )),
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                "xcb_get_property(active_window): failure",
-            )),
-        }
+        )
     }
-
-    /// Request a text property, returning a handle on the request.
     fn get_text_property<'a>(
         &'a self,
-        window: xcb::Window,
+        w: xcb::Window,
         atom: xcb::Atom,
     ) -> GetTextPropertyCookie<'a> {
-        GetTextPropertyCookie {
-            cookie: xcb::get_property(
-                &self.connection,
-                false,
-                window,
-                atom,
-                xcb::ATOM_ANY,
-                0,
-                1024,
-            ),
-            non_static_atoms: &self.non_static_atoms,
-        }
+        get_text_property(&self.connection, &self.non_static_atoms, w, atom)
     }
 }
 
@@ -188,6 +208,25 @@ impl NonStaticAtoms {
             compound_text: compound_text_cookie.get_reply().map_err(to_error)?.atom(),
         })
     }
+}
+
+/// Request a text property, returning a handle on the request.
+fn get_text_property<'a>(
+    connection: &'a xcb::Connection,
+    non_static_atoms: &'a NonStaticAtoms,
+    window: xcb::Window,
+    atom: xcb::Atom,
+) -> GetTextPropertyCookie<'a> {
+    GetTextPropertyCookie {
+        cookie: xcb::get_property(connection, false, window, atom, xcb::ATOM_ANY, 0, 1024),
+        non_static_atoms: non_static_atoms,
+    }
+}
+
+/// Ongoing request for a text property (impl detail of Stalker).
+struct GetTextPropertyCookie<'a> {
+    cookie: xcb::GetPropertyCookie<'a>,
+    non_static_atoms: &'a NonStaticAtoms,
 }
 
 impl<'a> GetTextPropertyCookie<'a> {
@@ -268,14 +307,14 @@ impl Stream for ActiveWindowChanges {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
-        // Check if readable (this also registers the fd once).
+        // Check if there is inbound data (xcb events to process)
         match self.inner.poll_read_ready(mio::Ready::readable()) {
             Ok(Async::Ready(_)) => (),
             Ok(Async::NotReady) => return Ok(Async::NotReady),
             Err(e) => return Err(e),
         }
         // Read all events
-        let active_window_changed = self.inner.get_ref().process_events();
+        let active_window_changed = self.inner.get_mut().process_events()?;
 
         // Reset read flag, will be set again if data arrives on socket
         self.inner.clear_read_ready(mio::Ready::readable())?;
