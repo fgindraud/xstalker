@@ -61,8 +61,10 @@ fn get_active_window(
     );
     match &cookie.get_reply() {
         Ok(reply)
-            if reply.type_() == xcb::ATOM_WINDOW && reply.bytes_after() == 0
-                && reply.value_len() == 1 && reply.format() == 32 =>
+            if reply.type_() == xcb::ATOM_WINDOW
+                && reply.bytes_after() == 0
+                && reply.value_len() == 1
+                && reply.format() == 32 =>
         {
             // Not pretty. Assumes that xcb::Window is an u32
             let buf: &[xcb::Window] = reply.value();
@@ -166,7 +168,8 @@ impl Stalker {
                     println!("DEBUG: prop change active_window on root");
                     active_window_changed = true;
                 }
-                if event.window() == self.current_active_window && event.atom() == xcb::ATOM_WM_NAME
+                if event.window() == self.current_active_window
+                    && event.atom() == xcb::ATOM_WM_NAME
                     && event.state() == xcb::PROPERTY_NEW_VALUE as u8
                 {
                     println!("DEBUG: prop change title on active_window");

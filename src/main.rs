@@ -43,9 +43,6 @@ impl fmt::Display for ErrorMessage {
     }
 }
 impl error::Error for ErrorMessage {
-    fn description(&self) -> &str {
-        self.message.as_str()
-    }
     fn cause(&self) -> Option<&error::Error> {
         match &self.inner {
             Some(b) => Some(b.as_ref()),
