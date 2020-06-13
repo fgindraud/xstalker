@@ -4,7 +4,7 @@ extern crate chrono;
 extern crate clap;
 extern crate tokio;
 use std::cell::RefCell;
-use std::error;
+use std::error::Error;
 use std::fmt;
 use std::io;
 use std::path::Path;
@@ -15,13 +15,13 @@ use tokio::prelude::*;
 #[derive(Debug)]
 pub struct ErrorMessage {
     message: String,
-    inner: Option<Box<error::Error + Send + Sync>>,
+    inner: Option<Box<dyn Error + Send + Sync>>,
 }
 impl ErrorMessage {
     pub fn new<M, E>(message: M, cause: E) -> Self
     where
         M: Into<String>,
-        E: error::Error + Send + Sync + 'static,
+        E: Error + Send + Sync + 'static,
     {
         ErrorMessage {
             message: message.into(),
@@ -42,8 +42,8 @@ impl fmt::Display for ErrorMessage {
         self.message.fmt(f)
     }
 }
-impl error::Error for ErrorMessage {
-    fn cause(&self) -> Option<&error::Error> {
+impl Error for ErrorMessage {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.inner {
             Some(b) => Some(b.as_ref()),
             None => None,
@@ -138,7 +138,7 @@ fn change_time_window(
 }
 
 fn run_daemon(
-    classifier: &mut Classifier,
+    classifier: &mut dyn Classifier,
     db_file: &Path,
     db_write_interval: time::Duration,
     time_window_size: time::Duration,
@@ -213,7 +213,8 @@ fn run_daemon(
                     &mut duration_counter.borrow_mut(),
                     &window_start.borrow(),
                     instant,
-                ).map_err(|e| {
+                )
+                .map_err(|e| {
                     ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e)
                 })
             });
@@ -222,19 +223,19 @@ fn run_daemon(
     let all_time_window_changes = tokio::timer::Interval::new(
         time::Instant::now() + duration_to_next_window_change,
         time_window_size,
-    ).map_err(|e| ErrorMessage::new("Timer error", e))
-        .for_each(|instant| {
-            println!("task_new_time_window");
-            change_time_window(
-                &mut db.borrow_mut(),
-                &mut duration_counter.borrow_mut(),
-                &mut window_start.borrow_mut(),
-                time_window_size,
-                instant,
-            ).map_err(|e| {
-                ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e)
-            })
-        });
+    )
+    .map_err(|e| ErrorMessage::new("Timer error", e))
+    .for_each(|instant| {
+        println!("task_new_time_window");
+        change_time_window(
+            &mut db.borrow_mut(),
+            &mut duration_counter.borrow_mut(),
+            &mut window_start.borrow_mut(),
+            time_window_size,
+            instant,
+        )
+        .map_err(|e| ErrorMessage::new(format!("Unable to write to database '{}'", db_filename), e))
+    });
 
     // Create a tokio runtime to implement an event loop.
     // Single threaded is enough.
@@ -309,19 +310,20 @@ fn do_main() -> Result<(), ErrorMessage> {
         ));
     }
 
-    let mut classifier: Box<Classifier> = match matches.subcommand() {
+    let mut process_classifier;
+    let classifier: &mut dyn Classifier = match matches.subcommand() {
         ("process", Some(process_args)) => {
             let command_name = process_args.value_of_os("command").unwrap();
             let command_args = process_args.values_of_os("args").unwrap_or_default();
-            let classifier = classifier::Process::new(command_name, command_args)
+            process_classifier = classifier::Process::new(command_name, command_args)
                 .map_err(|e| ErrorMessage::new("Cannot create subprocess classifier", e))?;
-            Box::new(classifier)
+            &mut process_classifier
         }
         _ => panic!("Argument parsing: subcommand is mandatory"),
     };
 
     run_daemon(
-        classifier.as_mut(),
+        classifier,
         Path::new(matches.value_of_os("db_file").unwrap()),
         time::Duration::from_secs(db_write_interval_secs),
         time::Duration::from_secs(time_window_size_secs),
@@ -336,11 +338,11 @@ fn main() -> Result<(), ShowErrorTraceback<ErrorMessage>> {
 }
 
 /// Print error causes in a traceback fashion
-struct ShowErrorTraceback<T: error::Error>(T);
-impl<T: error::Error> fmt::Debug for ShowErrorTraceback<T> {
+struct ShowErrorTraceback<T: Error>(T);
+impl<T: Error> fmt::Debug for ShowErrorTraceback<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", &self.0)?;
-        for err in Traceback(self.0.cause()) {
+        for err in Traceback(self.0.source()) {
             write!(f, ":\n{}", err)?;
         }
         Ok(())
@@ -348,13 +350,13 @@ impl<T: error::Error> fmt::Debug for ShowErrorTraceback<T> {
 }
 
 /// Iterate on error causes
-struct Traceback<'a>(Option<&'a error::Error>);
+struct Traceback<'a>(Option<&'a dyn Error>);
 impl<'a> Iterator for Traceback<'a> {
-    type Item = &'a error::Error;
+    type Item = &'a dyn Error;
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.0;
         self.0 = match &current {
-            Some(err) => err.cause(),
+            Some(err) => err.source(),
             None => None,
         };
         current

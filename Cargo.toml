@@ -3,6 +3,7 @@ name = "xstalker"
 version = "0.1.0"
 authors = ["François Gindraud <francois.gindraud@gmail.com>"]
 description = "Tracks time spent on the computer, according to user defined categories"
+edition = "2018"
 
 [dependencies]
 mio = "0.6"

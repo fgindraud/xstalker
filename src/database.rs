@@ -11,7 +11,7 @@ use std::time;
 // io::Error with InvalidData is used for DB formatting errors. Shorten creation.
 fn bad_data<E>(error: E) -> io::Error
 where
-    E: Into<Box<std::error::Error + Send + Sync>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
@@ -339,7 +339,7 @@ impl CategoryDurationCounter {
 
     /// Set all durations to 0. For time window change.
     pub fn reset_durations(&mut self) {
-        for mut d in &mut self.durations {
+        for d in &mut self.durations {
             *d = time::Duration::new(0, 0)
         }
     }

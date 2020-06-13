@@ -258,7 +258,8 @@ impl<'a> GetTextPropertyCookie<'a> {
                         xcb::ATOM_STRING,
                         self.non_static_atoms.utf8_string,
                         self.non_static_atoms.compound_text,
-                    ].contains(&atom) =>
+                    ]
+                    .contains(&atom) =>
                     {
                         return std::str::from_utf8(reply.value())
                             .ok()
@@ -340,9 +341,9 @@ impl Stream for ActiveWindowChanges {
 
         if active_window_changed {
             // get_active_window_metadata requests replies are all consumed
-            Ok(Async::Ready(Some(self.inner
-                .get_ref()
-                .get_active_window_metadata()?)))
+            Ok(Async::Ready(Some(
+                self.inner.get_ref().get_active_window_metadata()?,
+            )))
         } else {
             Ok(Async::NotReady)
         }
