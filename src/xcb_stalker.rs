@@ -1,4 +1,3 @@
-#![deny(deprecated)]
 extern crate mio;
 extern crate xcb; // for xcb_stalker
 
@@ -274,35 +273,33 @@ impl<'a> GetTextPropertyCookie<'a> {
 }
 
 /// Polling support for the listener: just use the underlying file descriptor.
-impl mio::Evented for Stalker {
+impl mio::event::Source for Stalker {
     fn register(
-        &self,
-        poll: &mio::Poll,
+        &mut self,
+        registry: &mio::Registry,
         token: mio::Token,
-        interest: mio::Ready,
-        opts: mio::PollOpt,
+        interests: mio::Interest,
     ) -> io::Result<()> {
-        mio::unix::EventedFd(&self.connection.as_raw_fd()).register(poll, token, interest, opts)
+        mio::unix::SourceFd(&self.connection.as_raw_fd()).register(registry, token, interests)
     }
 
     fn reregister(
-        &self,
-        poll: &mio::Poll,
+        &mut self,
+        registry: &mio::Registry,
         token: mio::Token,
-        interest: mio::Ready,
-        opts: mio::PollOpt,
+        interests: mio::Interest,
     ) -> io::Result<()> {
-        mio::unix::EventedFd(&self.connection.as_raw_fd()).reregister(poll, token, interest, opts)
+        mio::unix::SourceFd(&self.connection.as_raw_fd()).reregister(registry, token, interests)
     }
 
-    fn deregister(&self, poll: &mio::Poll) -> io::Result<()> {
-        mio::unix::EventedFd(&self.connection.as_raw_fd()).deregister(poll)
+    fn deregister(&mut self, registry: &mio::Registry) -> io::Result<()> {
+        mio::unix::SourceFd(&self.connection.as_raw_fd()).deregister(registry)
     }
 }
 
 /// Asynchronous stream producing ActiveWindowMetadata when active window changes.
 pub struct ActiveWindowChanges {
-    inner: PollEvented<Stalker>,
+    inner: Stalker,
 }
 
 impl ActiveWindowChanges {
@@ -310,14 +307,14 @@ impl ActiveWindowChanges {
     /// No tokio reactor is specified, so the Stalker will be registered lazily at first use.
     pub fn new() -> io::Result<Self> {
         Ok(ActiveWindowChanges {
-            inner: PollEvented::new(Stalker::new()?),
+            inner: Stalker::new()?,
         })
     }
 
     /// Request the current metadata, irrespective of the stream state.
     /// This can be used for initialisation, before the first change.
     pub fn get_current_metadata(&self) -> io::Result<(ActiveWindowMetadata, time::Instant)> {
-        self.inner.get_ref().get_active_window_metadata()
+        self.inner.get_active_window_metadata()
     }
 }
 
@@ -342,7 +339,7 @@ impl Stream for ActiveWindowChanges {
         if active_window_changed {
             // get_active_window_metadata requests replies are all consumed
             Ok(Async::Ready(Some(
-                self.inner.get_ref().get_active_window_metadata()?,
+                self.inner.get_active_window_metadata()?,
             )))
         } else {
             Ok(Async::NotReady)
