@@ -6,11 +6,6 @@ description = "Tracks time spent on the computer, according to user defined cate
 edition = "2018"
 
 [dependencies]
-tokio = "0.1"
 xcb = "^0.9"
-chrono = "^0.4"
-clap = "^2"
-
-[dependencies.mio]
-version = "^0.7"
-features = ["os-util"]
+anyhow = "^1"
+gumdrop = "^0.8"
