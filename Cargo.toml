@@ -6,6 +6,9 @@ description = "Tracks time spent on the computer, according to user defined cate
 edition = "2018"
 
 [dependencies]
+# Async framework
+libc = "^0.2"
+# Application
 xcb = "^0.9"
 anyhow = "^1"
 gumdrop = "^0.8"
