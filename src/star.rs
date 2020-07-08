@@ -1,110 +1,138 @@
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io;
 use std::os::unix::io::RawFd;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-pub enum Event {
-    Time(Instant),
-    Readable(RawFd),
-    Writable(RawFd),
-    Join,
+#[derive(Clone)]
+pub struct RuntimeHandle(Rc<RefCell<Runtime>>);
+
+struct Runtime {
+    ready_tasks: VecDeque<Pin<Rc<dyn TaskMakeProgress>>>,
 }
 
-pub enum Poll<T> {
-    Complete(T),
-    WaitingFor(Event),
-}
-
-pub trait Future {
-    type Output;
-    fn poll(&mut self, runtime: &mut Runtime) -> Poll<Self::Output>;
-}
-
-impl Runtime {
+impl RuntimeHandle {
     fn new() -> Self {
-        Runtime {
+        Self(Rc::new(RefCell::new(Runtime {
             ready_tasks: VecDeque::new(),
-        }
+        })))
     }
 
-    pub fn spawn<F, T>(&mut self, mut f: F) -> JoinHandle<T>
+    pub fn spawn<F, R>(&self, f: F) -> JoinHandle<R>
     where
-        F: Future<Output = T> + 'static,
-        T: 'static,
+        F: Future<Output = R> + 'static,
+        R: 'static,
     {
-        let shared_state = Rc::new(Cell::new(TaskState::Running(None)));
-        let handle = JoinHandle {
-            state: shared_state.clone(),
+        let task = Rc::pin(RefCell::new(TaskState::Running {
+            future: f,
+            wake_on_completion: None,
+        }));
+        self.0.borrow_mut().ready_tasks.push_back(task.clone());
+        JoinHandle(task)
+    }
+
+    pub fn block_on<F, R>(&self, f: F) -> Result<R, io::Error>
+    where
+        F: Future<Output = R> + 'static,
+        R: 'static,
+    {
+        let handle = self.spawn(f);
+        while let Some(task) = self.0.borrow_mut().ready_tasks.pop_front() {
+            task.as_ref().make_progress()
+        }
+        unimplemented!()
+    }
+}
+
+/// Task frame ; holds the future then the future's result.
+/// This is allocated once in an Rc.
+/// One handle is given to the runtime with the make_progress capability.
+/// Another handle is given to the user to get the return value (JoinHandle).
+enum TaskState<F, R> {
+    Running {
+        future: F, // Only future is pin-structural
+        wake_on_completion: Option<Waker>,
+    },
+    Completed(Option<R>),
+}
+
+/// Internal trait for the make_progress capability.
+/// Used to get a type erased reference to the task for the runtime.
+trait TaskMakeProgress {
+    fn make_progress(self: Pin<&Self>);
+}
+
+impl<F, R> TaskMakeProgress for RefCell<TaskState<F, R>>
+where
+    F: Future<Output = R>,
+{
+    fn make_progress(self: Pin<&Self>) {
+        let (future, wake_on_completion) = match &mut *self.as_ref().borrow_mut() {
+            TaskState::Running {
+                future,
+                wake_on_completion,
+            } => (
+                // SAFETY : The future is not moved out until destruction when completed
+                unsafe { Pin::new_unchecked(future) },
+                wake_on_completion,
+            ),
+            TaskState::Completed(_) => panic!("Running completed task"),
         };
-        let progress_fn = Box::new(move |runtime: &mut Runtime| match f.poll(runtime) {
-            Poll::Complete(value) => {
-                match shared_state.replace(TaskState::Completed(value)) {
-                    TaskState::Running(Some(t)) => runtime.ready_tasks.push_back(t),
-                    TaskState::Running(None) => (),
-                    _ => panic!("Task should be running"),
+        let mut context = Context::from_waker(unimplemented!());
+        match future.poll(&mut context) {
+            Poll::Pending => (),
+            Poll::Ready(value) => {
+                if let Some(waker) = wake_on_completion {
+                    waker.wake()
                 }
-                Poll::Complete(())
-            }
-            Poll::WaitingFor(e) => Poll::WaitingFor(e),
-        });
-        self.ready_tasks.push_back(progress_fn);
-        handle
-    }
-
-    fn run(&mut self) {
-        //
-    }
-}
-
-pub struct JoinHandle<T> {
-    state: Rc<Cell<TaskState<T>>>,
-}
-
-impl<T> JoinHandle<T> {
-    ///
-    pub fn try_join(self) -> Result<T, Self> {
-        let state: &Cell<TaskState<T>> = &self.state;
-        match state.replace(TaskState::Joined) {
-            TaskState::Joined => panic!("Double join"),
-            TaskState::Completed(value) => Ok(value),
-            running => {
-                state.set(running);
-                Err(self)
+                *self.borrow_mut() = TaskState::Completed(Some(value))
             }
         }
     }
 }
 
-pub fn run<F, T>(f: F) -> Result<T, io::Error>
+/// Internal trait for the testing task completion and return value extraction.
+/// Allows a partially type erased (remove the F, keep the R) reference to the task frame.
+trait TaskJoin {
+    type Output;
+    fn join(&self, waker: &Waker) -> Poll<Self::Output>;
+}
+
+impl<F, T> TaskJoin for RefCell<TaskState<F, T>>
 where
-    F: Future<Output = T> + 'static,
-    T: 'static,
+    F: Future<Output = T>,
 {
-    let mut runtime = Runtime {
-        ready_tasks: VecDeque::new(),
-    };
-    let completion = runtime.spawn(f);
-    runtime.run();
-    completion
-        .try_join()
-        .map_err(|_| io::Error::from(io::ErrorKind::Other))
+    type Output = T;
+    fn join(&self, waker: &Waker) -> Poll<T> {
+        match &mut *self.borrow_mut() {
+            TaskState::Running {
+                future: _, // SAFETY : future is not moved
+                wake_on_completion,
+            } => {
+                *wake_on_completion = Some(waker.clone()); // Always update waker
+                Poll::Pending
+            }
+            TaskState::Completed(value) => Poll::Ready(value.take().expect("Double join")),
+        }
+    }
 }
 
-type BoxedProgressFn = Box<dyn FnMut(&mut Runtime) -> Poll<()>>;
+/// Creating a task returns this JoinHandle, which represents the task completion.
+pub struct JoinHandle<T>(Pin<Rc<dyn TaskJoin<Output = T>>>);
 
-pub struct Runtime {
-    ready_tasks: VecDeque<BoxedProgressFn>,
+impl<T> Future for JoinHandle<T> {
+    type Output = T;
+    fn poll(self: Pin<&mut Self>, context: &mut Context) -> Poll<T> {
+        self.0.join(context.waker())
+    }
 }
 
-enum TaskState<T> {
-    Running(Option<BoxedProgressFn>), // Task waiting on self
-    Completed(T),
-    Joined,
-}
-
-fn sys_poll(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> Result<usize, io::Error> {
+// Wrap poll() syscall
+fn syscall_poll(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> Result<usize, io::Error> {
     let return_code = unsafe {
         libc::ppoll(
             fds.as_mut_ptr(),
@@ -127,35 +155,7 @@ fn sys_poll(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> Result<usize
 
 #[test]
 fn test() {
-    struct Ready<T>(Option<T>);
-    impl<T> Ready<T> {
-        fn new(t: T) -> Self {
-            Ready(Some(t))
-        }
-    }
-    impl<T> Future for Ready<T> {
-        type Output = T;
-        fn poll(&mut self, _runtime: &mut Runtime) -> Poll<T> {
-            Poll::Complete(self.0.take().unwrap())
-        }
-    }
-
-    assert_eq!(run(Ready::new(42)).map_err(|e| e.to_string()), Ok(42));
-
-    enum Prog1 {Start,
-        Spawned{a:JoinHandle<i32>, b:JoinHandle<i32>},
-    }
-    impl Future for Prog1 {
-        type Output = i32;
-        fn poll(&mut self, runtime: &mut Runtime) -> Poll<i32> {
-            loop {
-                *self = match *self {
-                    Start => Prog1::Spawned{
-                        a: runtime.spawn(Ready::new(42)),
-                        b: runtime.spawn(Ready::new(-1))
-                    }
-                }
-            }
-        }
-    }
+    let runtime = RuntimeHandle::new();
+    let r = runtime.block_on(async { 42 }).expect("no sys error");
+    assert_eq!(r, 42);
 }
