@@ -24,20 +24,10 @@ impl RuntimeHandle {
         })))
     }
 
-    /// Creates a new task and return a struct representing completion
-    pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
-    where
-        F: Future + 'static,
-        F::Output: 'static,
-    {
-        let task = TaskState::new(future, &self.0);
-        self.0.borrow_mut().ready_tasks.push_back(task.clone());
-        JoinHandle(task)
-    }
-
-    /// Runs until no tasks are ready or waiting on IO / time
-    pub fn run(&self) -> Result<(), io::Error> {
-        // TODO poll
+    /// Runs tasks until the given task finishes, and return its value
+    pub fn block_on<F: Future + 'static>(&self, future: F) -> Result<F::Output, io::Error> {
+        let task = self.spawn(future);
+        // Run
         loop {
             // Written this way to ensure RefCell borrow ends before make_progress()
             let next_task = self.0.borrow_mut().ready_tasks.pop_front();
@@ -46,17 +36,19 @@ impl RuntimeHandle {
                 Some(task) => task.as_ref().make_progress(),
             }
         }
-        Ok(())
-    }
-
-    /// Runs tasks until the given task finishes, and return its value
-    pub fn block_on<T>(&self, task: JoinHandle<T>) -> Result<T, io::Error> {
-        // TODO improve
-        self.run()?;
+        // Check task has finished
         match task.0.join(None) {
             Poll::Ready(value) => Ok(value),
             Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
         }
+    }
+
+    /// Creates a new task and return a struct representing completion.
+    /// Only used inside async block to spawn new tasks ; to launch the runtime use block_on.
+    pub fn spawn<F: Future + 'static>(&self, future: F) -> JoinHandle<F::Output> {
+        let task = TaskState::new(future, &self.0);
+        self.0.borrow_mut().ready_tasks.push_back(task.clone());
+        JoinHandle(task)
     }
 }
 
@@ -64,7 +56,7 @@ impl RuntimeHandle {
 pub struct JoinHandle<T>(Pin<Rc<dyn TaskJoin<Output = T>>>);
 
 /// Handles support asynchronous wait
-impl<T> Future for JoinHandle<T> {
+impl<'r, T> Future for JoinHandle<T> {
     type Output = T;
     fn poll(self: Pin<&mut Self>, context: &mut Context) -> Poll<T> {
         self.0.join(Some(context.waker()))
@@ -266,16 +258,20 @@ fn syscall_poll(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> Result<u
 #[test]
 fn test() {
     let runtime = RuntimeHandle::new();
-    let t = runtime.spawn(async { 42 });
-    assert_eq!(runtime.block_on(t).expect("no sys error"), 42);
 
-    let t = runtime.spawn({
-        let runtime = runtime.clone();
-        async move {
-            let t = runtime.spawn(async { 21 });
-            let t2 = runtime.spawn(async { 21 });
-            t.await + t2.await
-        }
-    });
-    assert_eq!(runtime.block_on(t).expect("no sys error"), 42);
+    assert_eq!(runtime.block_on(async { 42 }).expect("no sys error"), 42);
+
+    assert_eq!(
+        runtime
+            .block_on({
+                let runtime = runtime.clone();
+                async move {
+                    let a = runtime.spawn(async { 21 });
+                    let b = runtime.spawn(async { 21 });
+                    a.await + b.await
+                }
+            })
+            .expect("no sys error"),
+        42
+    );
 }
