@@ -1,9 +1,6 @@
 use gumdrop::Options;
 use std::path::PathBuf;
 
-/// Single-thread async runtime
-mod star;
-
 /// Metadata for the current active window
 #[derive(Debug)]
 pub struct ActiveWindowMetadata {
