@@ -9,3 +9,4 @@ edition = "2018"
 xcb = "^0.9"
 anyhow = "^1"
 gumdrop = "^0.8"
+star = { git = "https://github.com/lereldarion/star" }

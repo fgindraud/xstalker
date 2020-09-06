@@ -1,11 +1,17 @@
 use gumdrop::Options;
 use std::path::PathBuf;
 
-/// Metadata for the current active window
-#[derive(Debug)]
+mod utils;
+
+/// Tracking of the active window state.
+mod active_window;
+
+/// Metadata for the current active window.
+#[derive(Debug, PartialEq, Eq)]
 pub struct ActiveWindowMetadata {
-    title: Option<String>,
-    class: Option<String>,
+    id: usize,
+    title: String,
+    class: String,
 }
 
 #[derive(Debug, Options)]
@@ -31,5 +37,36 @@ fn main() -> Result<(), anyhow::Error> {
 
     println!("{:?}", options);
 
+    star::block_on(async {
+        let mut watcher = active_window::ActiveWindowWatcher::new()?;
+        loop {
+            let metadata = watcher.active_window_change().await?;
+            dbg!(metadata);
+        }
+        Ok::<(), anyhow::Error>(())
+    })??;
+
     Ok(())
 }
+
+// Concurrently
+//
+// loop {
+//   wait_xcb_event
+//   read_new_state, get_time
+//   enqueue(state, time_slice, duration), splitting if duration covers multiple time slices
+//   send to classifier(async)
+// }
+// loop {
+//   recv classification
+//   dequeue(state, time_slice, duration)
+//   update_db (class, time_slice, duration)
+// }
+// loop {
+//   wait(write_frequency)
+//   store_db {
+//     rewrite last line
+//     new last line
+//     rewrite whole DB to add column and new data
+//   }
+// }
