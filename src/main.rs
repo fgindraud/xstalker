@@ -9,9 +9,12 @@ mod active_window;
 /// Metadata for the current active window.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ActiveWindowMetadata {
-    id: usize,
-    title: String,
-    class: String,
+    /// Window id in X.
+    id: u32,
+    /// Title bar text. Absent for some windows (like root).
+    title: Option<String>,
+    /// Usually the program name. Absent for some windows (like root).
+    class: Option<String>,
 }
 
 #[derive(Debug, Options)]
@@ -34,8 +37,7 @@ struct DaemonOptions {
 
 fn main() -> Result<(), anyhow::Error> {
     let options = DaemonOptions::parse_args_default_or_exit();
-
-    println!("{:?}", options);
+    dbg!(options);
 
     star::block_on(async {
         let mut watcher = active_window::ActiveWindowWatcher::new()?;
