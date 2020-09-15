@@ -58,7 +58,7 @@ impl ActiveWindowWatcher {
     }
 
     /// Get metadata, assume everything is cached (not in transient state).
-    fn cached_metadata(&self) -> ActiveWindowMetadata {
+    pub fn cached_metadata(&self) -> ActiveWindowMetadata {
         ActiveWindowMetadata {
             id: self.active_window.cached_value.unwrap(),
             title: self.active_window_title.cached_value.clone().unwrap(),
