@@ -1,10 +1,15 @@
 use gumdrop::Options;
 use std::path::PathBuf;
+use std::time::Duration;
+use time::OffsetDateTime;
 
 mod utils;
 
 /// Tracking of the active window state.
 mod active_window;
+
+/// Interact with external process to classify timeslots
+mod classifier;
 
 /// Metadata for the current active window.
 #[derive(Debug, PartialEq, Eq)]
@@ -15,6 +20,14 @@ pub struct ActiveWindowMetadata {
     title: Option<String>,
     /// Usually the program name. Absent for some windows (like root).
     class: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct TimeSpan {
+    start: OffsetDateTime,
+    end: OffsetDateTime,
+    /// Real duration, using a monotonous clock
+    duration: Duration,
 }
 
 #[derive(Debug, Options)]
