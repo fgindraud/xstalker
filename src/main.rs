@@ -10,6 +10,8 @@ mod active_window;
 /// Interact with external process to classify timeslots
 mod classifier;
 
+mod utils;
+
 /// Metadata for the current active window.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ActiveWindowMetadata {
@@ -56,25 +58,33 @@ fn main() -> Result<(), Error> {
     let mut watcher = active_window::ActiveWindowWatcher::new()?;
 
     star::block_on(async move {
-        let mut span_start_monotonic = Instant::now();
-        let mut span_start_user = OffsetDateTime::now_local();
-        let mut span_metadata = watcher.cached_metadata();
-        loop {
-            let new_metadata = watcher.active_window_change().await?;
-            let span_end_monotonic = Instant::now();
-            let span_end_user = OffsetDateTime::now_local();
+        let watch_window = star::spawn(async move {
+            let mut span_start_monotonic = Instant::now();
+            let mut span_start_user = OffsetDateTime::now_local();
+            let mut span_metadata = watcher.cached_metadata();
+            loop {
+                let new_metadata = watcher.active_window_change().await?;
+                let span_end_monotonic = Instant::now();
+                let span_end_user = OffsetDateTime::now_local();
 
-            let elapsed_span = TimeSpan {
-                start: span_start_user,
-                end: span_end_user,
-                duration: span_end_monotonic - span_start_monotonic,
-            };
-            classifier_in.classify(&span_metadata, elapsed_span)?;
+                let elapsed_span = TimeSpan {
+                    start: span_start_user,
+                    end: span_end_user,
+                    duration: span_end_monotonic - span_start_monotonic,
+                };
+                classifier_in.classify(&span_metadata, elapsed_span)?;
 
-            span_start_monotonic = span_end_monotonic;
-            span_start_user = span_end_user;
-            span_metadata = new_metadata;
-        }
+                span_start_monotonic = span_end_monotonic;
+                span_start_user = span_end_user;
+                span_metadata = new_metadata;
+            }
+        });
+        let update_db = star::spawn(async move {
+            // TODO
+            Ok::<(), Error>(())
+        });
+
+        utils::TryJoin::new(watch_window, update_db).await
     })
     .with_context(|| "async runtime error")?
 }

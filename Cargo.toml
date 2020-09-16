@@ -10,4 +10,5 @@ xcb = "^0.9"
 anyhow = "^1"
 gumdrop = "^0.8"
 time = "^0.2"
+pin-project = "^0.4"
 star = { git = "https://github.com/lereldarion/star" }
