@@ -1,9 +1,11 @@
 use crate::{ActiveWindowMetadata, TimeSpan};
 use anyhow::{Context, Error};
+use star::{set_nonblocking, FdEventType, WaitFdEvent};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, LineWriter, Write};
+use std::io::{self, BufRead, BufReader, LineWriter, Write};
+use std::os::unix::io::AsRawFd;
 use std::process;
 use std::rc::Rc;
 
@@ -49,8 +51,11 @@ pub fn spawn(command: &Vec<String>) -> Result<(ClassifierInput, ClassifierOutput
         .stdout(process::Stdio::piped())
         .spawn()
         .with_context(|| format!("Cannot spawn classifier process: '{}'", command))?;
+
     let stdin = process.stdin.take().unwrap();
     let stdout = process.stdout.take().unwrap();
+    set_nonblocking(stdout.as_raw_fd())?;
+
     let classifier = Rc::new(Classifier {
         process,
         awaiting_classification: RefCell::new(VecDeque::new()),
@@ -90,7 +95,7 @@ impl ClassifierInput {
             escape_opt_str(metadata.title.as_deref()),
             escape_opt_str(metadata.class.as_deref())
         )
-        .with_context(|| "Fail to send metadata to classifier process")
+        .with_context(|| "Failed to send metadata to classifier process")
     }
 }
 
@@ -102,5 +107,44 @@ fn escape_opt_str<'s>(s: Option<&'s str>) -> Cow<'s, str> {
             false => Cow::Borrowed(&s),
         },
         None => Cow::Borrowed(""),
+    }
+}
+
+impl ClassifierOutput {
+    pub async fn classified(&mut self) -> Result<(String, TimeSpan), Error> {
+        // Async-ly read a line
+        let mut classification = String::new();
+        loop {
+            match self.stdout.read_line(&mut classification) {
+                Ok(_) => break,
+                Err(e) => match e.kind() {
+                    io::ErrorKind::WouldBlock => {
+                        WaitFdEvent::new(
+                            self.stdout.get_ref().as_raw_fd(),
+                            FdEventType::IN | FdEventType::ERR,
+                        )
+                        .await
+                    }
+                    _ => return Err(Error::new(e).context("Reading classification")),
+                },
+            }
+        }
+
+        // Post process classification
+        if classification.is_empty() {
+            return Err(Error::msg(
+                "Classifier output was closed while waiting for classification",
+            ));
+        }
+        let classification = classification.trim().to_string();
+
+        let time_span = self
+            .classifier
+            .awaiting_classification
+            .borrow_mut()
+            .pop_front()
+            .ok_or_else(|| Error::msg("Received classification while none was expected"))?;
+
+        Ok((classification, time_span))
     }
 }

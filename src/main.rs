@@ -54,7 +54,7 @@ fn main() -> Result<(), Error> {
     let options = DaemonOptions::parse_args_default_or_exit();
     dbg!(&options);
 
-    let (mut classifier_in, classifier_out) = classifier::spawn(&options.classifier)?;
+    let (mut classifier_in, mut classifier_out) = classifier::spawn(&options.classifier)?;
     let mut watcher = active_window::ActiveWindowWatcher::new()?;
 
     star::block_on(async move {
@@ -80,8 +80,12 @@ fn main() -> Result<(), Error> {
             }
         });
         let update_db = star::spawn(async move {
-            // TODO
-            Ok::<(), Error>(())
+            loop {
+                let (classification, time_span) = classifier_out.classified().await?;
+
+                // TODO
+                dbg!(classification);
+            }
         });
 
         utils::TryJoin::new(watch_window, update_db).await
