@@ -1,6 +1,7 @@
 use crate::ActiveWindowMetadata;
 use anyhow::{Context, Error};
 use star::{FdEventType, WaitFdEvent};
+use std::convert::TryFrom;
 use std::future::Future;
 use std::os::unix::io::AsRawFd;
 
@@ -22,7 +23,7 @@ impl ActiveWindowWatcher {
             xcb::Connection::connect(None).with_context(|| "xcb_connect")?;
         let root_window = {
             let setup = connection.get_setup();
-            let screen = setup.roots().nth(screen_id as usize).unwrap();
+            let screen = setup.roots().nth(usize::try_from(screen_id)?).unwrap();
             screen.root()
         };
 
@@ -193,7 +194,7 @@ impl CachedProperty<xcb::Window> {
             self.atom,
             xcb::ATOM_WINDOW,
             0,
-            (std::mem::size_of::<xcb::Window>() / 4) as u32,
+            u32::try_from(std::mem::size_of::<xcb::Window>() / 4).unwrap(),
         );
         move || {
             let reply = cookie
@@ -202,7 +203,7 @@ impl CachedProperty<xcb::Window> {
             if reply.type_() == xcb::ATOM_WINDOW
                 && reply.bytes_after() == 0
                 && reply.value_len() == 1
-                && reply.format() as usize == std::mem::size_of::<xcb::Window>() * 8
+                && usize::from(reply.format()) == std::mem::size_of::<xcb::Window>() * 8
             {
                 let window: xcb::Window = reply.value()[0];
                 self.cached_value = Some(window);
